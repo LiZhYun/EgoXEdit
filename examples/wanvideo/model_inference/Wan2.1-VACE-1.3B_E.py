@@ -594,7 +594,7 @@ for episode_idx, episode_data in enumerate(robot_episodes):
         # Standard VACE parameters
         vace_video=vace_video,
         vace_video_mask=vace_video_mask,
-        vace_reference_image=Image.open("data/examples/wan/masked_object.jpg").resize((832, 480)) if os.path.exists("data/examples/wan/masked_object.jpg") else None,
+        vace_reference_image=Image.open(episode_data['end_effector_image_path']).resize((832, 480)),
         vace_scale=1.0,
         
         # VACE-E Enhanced parameters (task-embodiment fusion)
