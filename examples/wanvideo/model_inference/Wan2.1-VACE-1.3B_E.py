@@ -293,8 +293,9 @@ def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Codes/DataSets/small_t
                                 right_gripper_states.reshape(-1, 1)     # [frames, 1] - right gripper state
                             ], axis=1)  # Result: [frames, 20]
                             
-                            episode_data['hand_motion_sequence'] = torch.from_numpy(hand_motion_data).float()
+                            episode_data['hand_motion_sequence'] = torch.from_numpy(hand_motion_data).to(torch.bfloat16)
                             print(f"      ✅ Dual-hand motion shape: {episode_data['hand_motion_sequence'].shape} (20D format)")
+                            print(f"         - Dtype: {episode_data['hand_motion_sequence'].dtype}")
                             print(f"         - Left wrist (dims 0-8): position + rotation")
                             print(f"         - Right wrist (dims 9-17): position + rotation") 
                             print(f"         - Left gripper (dim 18): {np.unique(left_gripper_states)}")
@@ -333,8 +334,9 @@ def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Codes/DataSets/small_t
                                 right_gripper_states.reshape(-1, 1)     # [frames, 1] - right gripper (active)
                             ], axis=1)  # Result: [frames, 20]
                             
-                            episode_data['hand_motion_sequence'] = torch.from_numpy(hand_motion_data).float()
+                            episode_data['hand_motion_sequence'] = torch.from_numpy(hand_motion_data).to(torch.bfloat16)
                             print(f"      ✅ Single→Dual hand motion shape: {episode_data['hand_motion_sequence'].shape} (20D format)")
+                            print(f"         - Dtype: {episode_data['hand_motion_sequence'].dtype}")
                             print(f"         - Left hand: inactive (zeros)")
                             print(f"         - Right hand: active (actual data)")
                         
@@ -381,11 +383,16 @@ def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Codes/DataSets/small_t
                                     print(f"        ✓ Object {obj_id} trajectory shape: {obj_trajectory.shape}")
                             
                             if all_object_trajectories:
-                                # Stack all objects: [frames, num_objects, 9]
+                                # Stack all object trajectories: [frames, num_objects, 9]
                                 object_trajectory_data = np.stack(all_object_trajectories, axis=1)
-                                episode_data['object_trajectory_sequence'] = torch.from_numpy(object_trajectory_data).float()
-                                episode_data['object_ids'] = torch.tensor([object_ids])
-                                print(f"      ✓ Combined object trajectory shape: {episode_data['object_trajectory_sequence'].shape}")
+                                episode_data['object_trajectory_sequence'] = torch.from_numpy(object_trajectory_data).to(torch.bfloat16)
+                                episode_data['object_ids'] = torch.tensor(object_ids, dtype=torch.long)
+                                
+                                print(f"      ✓ Object trajectory shape: {episode_data['object_trajectory_sequence'].shape}")
+                                print(f"      ✓ Object trajectory dtype: {episode_data['object_trajectory_sequence'].dtype}")
+                                print(f"      ✓ Object IDs: {episode_data['object_ids']}")
+                            else:
+                                print(f"      ⚠️ No valid object trajectories found")
                         
                 except Exception as e:
                     print(f"      ⚠️ Error loading object trajectories: {e}")
