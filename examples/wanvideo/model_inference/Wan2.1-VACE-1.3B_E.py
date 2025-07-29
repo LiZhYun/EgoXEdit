@@ -511,9 +511,8 @@ for episode_idx, episode_data in enumerate(robot_episodes):
     if episode_data['end_effector_image_path']:
         print(f"Processing end-effector image: {episode_data['end_effector_image_path']}")
         try:
-            end_effector_image = Image.open(episode_data['end_effector_image_path']).convert('RGB')
-            # Resize to standard size for CLIP processing
-            end_effector_image = end_effector_image.resize((480, 832))
+            end_effector_image = Image.open(episode_data['end_effector_image_path']).resize((832, 480))
+            end_effector_image = pipe.preprocess_image(end_effector_image.resize((832, 480))).to(pipe.device)
             # Encode with CLIP image encoder
             vace_e_embodiment_image_features = pipe.image_encoder.encode_image([end_effector_image])
             print(f"✓ Embodiment image features shape: {vace_e_embodiment_image_features.shape}")
