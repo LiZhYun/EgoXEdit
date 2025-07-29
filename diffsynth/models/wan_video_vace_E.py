@@ -951,16 +951,16 @@ class VaceWanModel(torch.nn.Module):
         model_device = next(self.parameters()).device
         
         # Debug: Print device information
-        print(f"🔧 VACE-E Model device: {model_device}")
-        print(f"🔧 Hand motion device: {hand_motion_sequence.device if hand_motion_sequence is not None else 'None'}")
+        # print(f"🔧 VACE-E Model device: {model_device}")
+        # print(f"🔧 Hand motion device: {hand_motion_sequence.device if hand_motion_sequence is not None else 'None'}")
         
         # Move all input tensors to model device to prevent device mismatch errors
         if text_features is not None:
             text_features = text_features.to(model_device)
-            print(f"🔧 Text features moved to: {text_features.device}")
+            # print(f"🔧 Text features moved to: {text_features.device}")
         if hand_motion_sequence is not None:
             hand_motion_sequence = hand_motion_sequence.to(model_device)
-            print(f"🔧 Hand motion moved to: {hand_motion_sequence.device}")
+            # print(f"🔧 Hand motion moved to: {hand_motion_sequence.device}")
         if object_trajectory_sequence is not None:
             object_trajectory_sequence = object_trajectory_sequence.to(model_device)
         if object_ids is not None:
