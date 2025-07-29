@@ -916,63 +916,66 @@ class VaceWanModel(torch.nn.Module):
         use_gradient_checkpointing_offload: bool = False,
     ):
         """
-        Forward pass for VACE-E model with task and embodiment processing.
+        Enhanced VACE forward pass with task-embodiment fusion.
         
-        Processes both task features (text, hand motion, object trajectory) and 
-        embodiment features (CLIP-encoded end-effector image) to generate comprehensive
-        hints that guide the main DiT model.
+        Processes both task features (text, hand motion, object trajectories) and 
+        embodiment features (end-effector images) for robot manipulation video generation.
         
         Args:
-            x: Main model hidden states [batch, sequence_length, dim]
-               Used for residual connection and dimension matching
-            vace_context: List of editing context tensors (legacy, can be None for VACE-E)
-                         Each tensor: [channels, frames, height, width]
-                         Typically contains: inactive video, reactive video, mask
-            context: Text conditioning from T5 encoder [batch, text_tokens, text_dim]
-            t_mod: Time modulation tensor for diffusion timestep
-            freqs: Positional frequency embeddings for spatial/temporal positions
+            x: Noisy latent tensor [batch, channels, frames, height, width]
+            vace_context: Legacy VACE context (unused in VACE-E)
+            context: Text context from prompter [batch, seq_len, dim]
+            t_mod: Time modulation tensor for temporal conditioning
+            freqs: Frequency embeddings for positional encoding
             
-            # Task inputs (new for VACE-E)
-            text_features: Pre-encoded text features [batch, text_seq_len, text_dim]
-            hand_motion_sequence: Dual-hand poses [batch, motion_seq_len, 20]
-                                 Format: [left_wrist(9), right_wrist(9), left_gripper(1), right_gripper(1)]
-                                 - First 9 dims: Left wrist pose (3D position + 6D rotation)
-                                 - Next 9 dims: Right wrist pose (3D position + 6D rotation)
-                                 - 19th dim: Left gripper state (0=closed, 1=open)
-                                 - 20th dim: Right gripper state (0=closed, 1=open)
-            object_trajectory_sequence: Object trajectories [batch, traj_seq_len, num_objects, 9]
-            object_ids: Object type identifiers [batch, num_objects]
-            text_mask: Text attention mask [batch, text_seq_len]
-            motion_mask: Motion attention mask [batch, motion_seq_len]
-            trajectory_mask: Trajectory attention mask [batch, traj_seq_len]
+            # Task Features (Robot Demonstration Context)
+            text_features: Encoded task description [batch, seq_len, text_dim]
+            hand_motion_sequence: Dual-hand motion [batch, seq_len, 20]
+                                  Format: [left_wrist(9), right_wrist(9), left_gripper(1), right_gripper(1)]
+            object_trajectory_sequence: Object trajectories [batch, seq_len, num_objects, 9]
+            object_ids: Object type IDs [batch, num_objects]
+            text_mask: Task text attention mask [batch, seq_len]
+            motion_mask: Hand motion attention mask [batch, seq_len] 
+            trajectory_mask: Object trajectory attention mask [batch, seq_len, num_objects]
             
-            # Embodiment input (new for VACE-E)
-            embodiment_image_features: CLIP-encoded end-effector image [batch, 257, 1280]
-                                     From: clip_context = pipe.image_encoder.encode_image([image])
+            # Embodiment Features (Robot-Specific Context)
+            embodiment_image_features: End-effector image features [batch, 257, 1280]
             
             use_gradient_checkpointing: Enable gradient checkpointing for memory efficiency
-            use_gradient_checkpointing_offload: Offload checkpointed activations to CPU
+            use_gradient_checkpointing_offload: Enable offloading for gradient checkpointing
             
         Returns:
-            List[torch.Tensor]: Editing hints for each target DiT layer
-                               Each hint has shape matching the main model's hidden states
-                               
-        Processing Pipeline:
-        1. Extract task features (text, hand motion, object trajectory)
-        2. Fuse task features using multi-modal attention
-        3. Extract embodiment features from CLIP-encoded end-effector image
-        4. Combine task and embodiment features using weighted addition
-        5. Process through VACE attention blocks
-        6. Extract editing hints for main model integration
+            Dict of VACE-E hints for each layer: {layer_id: hint_tensor}
         """
         batch_size = x.shape[0]
-        device = x.device
         
-        # === TASK FEATURE PROCESSING ===
+        # Get model device for consistent tensor placement
+        model_device = next(self.parameters()).device
+        
+        # Move all input tensors to model device to prevent device mismatch errors
+        if text_features is not None:
+            text_features = text_features.to(model_device)
+        if hand_motion_sequence is not None:
+            hand_motion_sequence = hand_motion_sequence.to(model_device)
+        if object_trajectory_sequence is not None:
+            object_trajectory_sequence = object_trajectory_sequence.to(model_device)
+        if object_ids is not None:
+            object_ids = object_ids.to(model_device)
+        if text_mask is not None:
+            text_mask = text_mask.to(model_device)
+        if motion_mask is not None:
+            motion_mask = motion_mask.to(model_device)
+        if trajectory_mask is not None:
+            trajectory_mask = trajectory_mask.to(model_device)
+        if embodiment_image_features is not None:
+            embodiment_image_features = embodiment_image_features.to(model_device)
+        
+        # Task feature processing (if task processing is enabled and features are available)
         task_features = None
-        if self.enable_task_processing and (text_features is not None or 
-                                          hand_motion_sequence is not None or 
-                                          object_trajectory_sequence is not None):
+        if (self.enable_task_processing and 
+            (text_features is not None or 
+             hand_motion_sequence is not None or 
+             object_trajectory_sequence is not None)):
             
             # Process hand motion if available
             motion_features = None
@@ -1092,7 +1095,7 @@ class VaceWanModel(torch.nn.Module):
         else:
             # No features available - create zero tensor matching task dimension
             # Use a small sequence length as placeholder
-            c = torch.zeros(batch_size, 1, self.task_to_model_proj[0].out_features, device=device)
+            c = torch.zeros(batch_size, 1, self.task_to_model_proj[0].out_features, device=model_device)
         
         # === VACE ATTENTION PROCESSING ===
         # Step 4: Define gradient checkpointing wrapper
