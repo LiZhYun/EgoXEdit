@@ -835,9 +835,12 @@ class WanVideoPipeline(BasePipeline):
                     vace_layers=vace_e_layers,
                     enable_task_processing=vace_e_task_processing
                 )
+                # Ensure VACE-E model is on the correct device
+                pipe.vace_e = pipe.vace_e.to(device=device, dtype=torch_dtype)
                 print(f"✅ VACE-E model initialized with DiT weights")
                 print(f"   VACE-E layers: {vace_e_layers}")
                 print(f"   Task processing: {vace_e_task_processing}")
+                print(f"   Device: {device}, Dtype: {torch_dtype}")
             except Exception as e:
                 print(f"⚠️ VACE-E initialization failed: {e}")
                 print("Continuing without VACE-E support...")

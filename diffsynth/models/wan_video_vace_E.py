@@ -947,16 +947,20 @@ class VaceWanModel(torch.nn.Module):
         Returns:
             Dict of VACE-E hints for each layer: {layer_id: hint_tensor}
         """
-        batch_size = x.shape[0]
-        
         # Get model device for consistent tensor placement
         model_device = next(self.parameters()).device
+        
+        # Debug: Print device information
+        print(f"🔧 VACE-E Model device: {model_device}")
+        print(f"🔧 Hand motion device: {hand_motion_sequence.device if hand_motion_sequence is not None else 'None'}")
         
         # Move all input tensors to model device to prevent device mismatch errors
         if text_features is not None:
             text_features = text_features.to(model_device)
+            print(f"🔧 Text features moved to: {text_features.device}")
         if hand_motion_sequence is not None:
             hand_motion_sequence = hand_motion_sequence.to(model_device)
+            print(f"🔧 Hand motion moved to: {hand_motion_sequence.device}")
         if object_trajectory_sequence is not None:
             object_trajectory_sequence = object_trajectory_sequence.to(model_device)
         if object_ids is not None:
@@ -969,6 +973,8 @@ class VaceWanModel(torch.nn.Module):
             trajectory_mask = trajectory_mask.to(model_device)
         if embodiment_image_features is not None:
             embodiment_image_features = embodiment_image_features.to(model_device)
+        
+        batch_size = x.shape[0]
         
         # Task feature processing (if task processing is enabled and features are available)
         task_features = None
@@ -1965,3 +1971,4 @@ print("✅ VACE-E initialized with pre-trained DiT weights")
     print("• Ready for distributed training and inference")
     
     print("\n🎉 Ready for robot manipulation video generation!")
+
