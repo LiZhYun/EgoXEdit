@@ -40,7 +40,7 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         # Initialize VACE-E enhanced pipeline
         self.pipe = WanVideoPipeline.from_pretrained(
             torch_dtype=torch.bfloat16, 
-            device="cpu", 
+            device="cuda", 
             model_configs=model_configs,
             # VACE-E configuration
             enable_vace_e=enable_vace_e,
