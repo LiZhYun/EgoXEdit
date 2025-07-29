@@ -1038,12 +1038,14 @@ class VaceWanModel(torch.nn.Module):
         
         # === EMBODIMENT FEATURE PROCESSING ===
         embodiment_features = None
-        if self.enable_task_processing and embodiment_image_features is not None:
-            # Process CLIP-encoded end-effector image through adapter
-            # embodiment_image_features shape: [batch, 257, 1280] (CLIP output)
-            embodiment_features = self.embodiment_image_adapter(embodiment_image_features)
-            # Output shape: [batch, 257, dim]
+        if embodiment_image_features is not None:
+            # Ensure embodiment adapter is on correct device
+            self.embodiment_image_adapter = self.embodiment_image_adapter.to(model_device)
             
+            # Process end-effector image context
+            # embodiment_image_features: [batch, 257, 1280] from CLIP
+            embodiment_features = self.embodiment_image_adapter(embodiment_image_features)
+        
         elif vace_context is not None:
             # Fallback to original VACE processing for backward compatibility
             # Step 1: Convert editing context to latent patches (original VACE processing)
@@ -1119,6 +1121,12 @@ class VaceWanModel(torch.nn.Module):
             c = torch.zeros(batch_size, 1, self.task_to_model_proj[0].out_features, device=model_device)
         
         # === VACE ATTENTION PROCESSING ===
+        
+        # Ensure all VACE blocks and projection layers are on correct device
+        for i, block in enumerate(self.vace_blocks):
+            self.vace_blocks[i] = block.to(model_device)
+        self.task_to_model_proj = self.task_to_model_proj.to(model_device)
+        
         # Step 4: Define gradient checkpointing wrapper
         # This enables memory-efficient training for large models
         def create_custom_forward(module):
