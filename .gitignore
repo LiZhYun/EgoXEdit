@@ -1,0 +1,9 @@
+/models
+*.ckpt
+*.pt
+*.pyc
+output/
+outputs/
+checkpoints/
+# ignore all files in the models folder
+models/

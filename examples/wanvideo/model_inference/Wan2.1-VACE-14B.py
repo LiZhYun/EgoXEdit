@@ -15,6 +15,16 @@ pipe = WanVideoPipeline.from_pretrained(
     ],
 )
 
+# Load LoRA - you can choose which module to apply LoRA to:
+
+# Option 1: Load LoRA for the DIT (Diffusion Transformer) model
+# pipe.load_lora(pipe.dit, "path/to/your/lora.safetensors", alpha=1.0)
+
+# Option 2: Load LoRA for the VACE model (for VACE-specific tasks)
+# pipe.load_lora(pipe.vace, "path/to/your/lora.safetensors", alpha=1.0)
+
+# Example usage (uncomment and modify path as needed):
+# pipe.load_lora(pipe.vace, "models/lora/your_vace_lora.safetensors", alpha=1.0)
 
 pipe.enable_vram_management()
 

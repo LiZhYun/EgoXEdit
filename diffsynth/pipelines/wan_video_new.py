@@ -1,3 +1,23 @@
+"""
+Wan Video Pipeline Implementation for DiffSynth Studio
+
+This module implements the WanVideoPipeline, a comprehensive video generation system
+developed by Alibaba (Wan AI). The pipeline supports multiple video generation modes:
+- Text-to-Video (T2V): Generate videos from text prompts
+- Image-to-Video (I2V): Generate videos from input images 
+- Video-to-Video (V2V): Transform existing videos
+- First-Last Frame to Video (FLF2V): Generate videos between two frames
+- VACE: Video editing and completion
+- Various control mechanisms (camera, speed, depth, etc.)
+
+Key Architecture Components:
+1. BasePipeline: Base class providing common functionality
+2. WanVideoPipeline: Main pipeline orchestrating all video generation tasks
+3. PipelineUnit System: Modular processing units for different tasks
+4. ModelConfig: Configuration management for loading models
+5. Advanced Features: VRAM management, TeaCache, Unified Sequence Parallel
+"""
+
 import torch, warnings, glob, os, types
 import numpy as np
 from PIL import Image
@@ -12,6 +32,7 @@ from tqdm import tqdm
 from typing import Optional
 from typing_extensions import Literal
 
+# Import DiffSynth components
 from ..models import ModelManager, load_state_dict
 from ..models.wan_video_dit import WanModel, RMSNorm, sinusoidal_embedding_1d
 from ..models.wan_video_text_encoder import WanTextEncoder, T5RelativeEmbedding, T5LayerNorm
@@ -25,8 +46,21 @@ from ..vram_management import enable_vram_management, AutoWrappedModule, AutoWra
 from ..lora import GeneralLoRALoader
 
 
-
 class BasePipeline(torch.nn.Module):
+    """
+    Base pipeline class providing fundamental functionality for all diffusion pipelines.
+    
+    This class serves as the foundation for all video/image generation pipelines in DiffSynth,
+    providing common utilities for device management, shape checking, preprocessing, 
+    VRAM management, and other core functionalities.
+    
+    Key Features:
+    - Device and dtype management for efficient computation
+    - Shape validation and automatic resizing
+    - Image/video preprocessing utilities
+    - VRAM management for large models
+    - Noise generation for diffusion processes
+    """
 
     def __init__(
         self,
@@ -34,6 +68,17 @@ class BasePipeline(torch.nn.Module):
         height_division_factor=64, width_division_factor=64,
         time_division_factor=None, time_division_remainder=None,
     ):
+        """
+        Initialize the base pipeline.
+        
+        Args:
+            device: Computation device ('cuda' or 'cpu')
+            torch_dtype: Data type for intermediate variables (not models)
+            height_division_factor: Height must be divisible by this factor
+            width_division_factor: Width must be divisible by this factor  
+            time_division_factor: Number of frames must follow this pattern
+            time_division_remainder: Remainder for frame count validation
+        """
         super().__init__()
         # The device and torch_dtype is used for the storage of intermediate variables, not models.
         self.device = device
@@ -47,6 +92,7 @@ class BasePipeline(torch.nn.Module):
         
         
     def to(self, *args, **kwargs):
+        """Move pipeline to specified device/dtype while updating internal state."""
         device, dtype, non_blocking, convert_to_format = torch._C._nn._parse_to(*args, **kwargs)
         if device is not None:
             self.device = device
@@ -57,6 +103,21 @@ class BasePipeline(torch.nn.Module):
 
 
     def check_resize_height_width(self, height, width, num_frames=None):
+        """
+        Validate and adjust dimensions to meet model requirements.
+        
+        Video generation models typically require specific dimension constraints:
+        - Height/width must be divisible by certain factors (usually 8, 16, or 64)
+        - Frame count must follow specific patterns for temporal consistency
+        
+        Args:
+            height: Desired video height
+            width: Desired video width  
+            num_frames: Number of frames (optional)
+            
+        Returns:
+            Adjusted (height, width) or (height, width, num_frames)
+        """
         # Shape check
         if height % self.height_division_factor != 0:
             height = (height + self.height_division_factor - 1) // self.height_division_factor * self.height_division_factor
@@ -74,6 +135,20 @@ class BasePipeline(torch.nn.Module):
 
 
     def preprocess_image(self, image, torch_dtype=None, device=None, pattern="B C H W", min_value=-1, max_value=1):
+        """
+        Convert PIL Image to torch tensor with specified format and value range.
+        
+        Args:
+            image: PIL Image to convert
+            torch_dtype: Target tensor dtype
+            device: Target device
+            pattern: Tensor dimension pattern (e.g., "B C H W" for batch, channel, height, width)
+            min_value: Minimum pixel value after normalization
+            max_value: Maximum pixel value after normalization
+            
+        Returns:
+            Preprocessed torch tensor
+        """
         # Transform a PIL.Image to torch.Tensor
         image = torch.Tensor(np.array(image, dtype=np.float32))
         image = image.to(dtype=torch_dtype or self.torch_dtype, device=device or self.device)
@@ -83,6 +158,20 @@ class BasePipeline(torch.nn.Module):
 
 
     def preprocess_video(self, video, torch_dtype=None, device=None, pattern="B C T H W", min_value=-1, max_value=1):
+        """
+        Convert list of PIL Images to video tensor.
+        
+        Args:
+            video: List of PIL Images representing video frames
+            torch_dtype: Target tensor dtype
+            device: Target device  
+            pattern: Tensor dimension pattern (e.g., "B C T H W" for batch, channel, time, height, width)
+            min_value: Minimum pixel value after normalization
+            max_value: Maximum pixel value after normalization
+            
+        Returns:
+            Video tensor with shape according to pattern
+        """
         # Transform a list of PIL.Image to torch.Tensor
         video = [self.preprocess_image(image, torch_dtype=torch_dtype, device=device, min_value=min_value, max_value=max_value) for image in video]
         video = torch.stack(video, dim=pattern.index("T") // 2)
@@ -90,6 +179,18 @@ class BasePipeline(torch.nn.Module):
 
 
     def vae_output_to_image(self, vae_output, pattern="B C H W", min_value=-1, max_value=1):
+        """
+        Convert VAE latent tensor back to PIL Image.
+        
+        Args:
+            vae_output: VAE decoder output tensor
+            pattern: Input tensor dimension pattern
+            min_value: Minimum value in tensor
+            max_value: Maximum value in tensor
+            
+        Returns:
+            PIL Image
+        """
         # Transform a torch.Tensor to PIL.Image
         if pattern != "H W C":
             vae_output = reduce(vae_output, f"{pattern} -> H W C", reduction="mean")
@@ -100,6 +201,18 @@ class BasePipeline(torch.nn.Module):
 
 
     def vae_output_to_video(self, vae_output, pattern="B C T H W", min_value=-1, max_value=1):
+        """
+        Convert VAE latent tensor back to list of PIL Images (video).
+        
+        Args:
+            vae_output: VAE decoder output tensor
+            pattern: Input tensor dimension pattern  
+            min_value: Minimum value in tensor
+            max_value: Maximum value in tensor
+            
+        Returns:
+            List of PIL Images representing video frames
+        """
         # Transform a torch.Tensor to list of PIL.Image
         if pattern != "T H W C":
             vae_output = reduce(vae_output, f"{pattern} -> T H W C", reduction="mean")
@@ -108,6 +221,17 @@ class BasePipeline(torch.nn.Module):
 
 
     def load_models_to_device(self, model_names=[]):
+        """
+        Manage model placement for VRAM optimization.
+        
+        When VRAM management is enabled, this method:
+        1. Offloads unused models to CPU/storage
+        2. Loads required models to GPU
+        3. Clears VRAM cache for efficiency
+        
+        Args:
+            model_names: List of model names to load to device
+        """
         if self.vram_management_enabled:
             # offload models
             for name, model in self.named_children():
@@ -131,6 +255,20 @@ class BasePipeline(torch.nn.Module):
 
 
     def generate_noise(self, shape, seed=None, rand_device="cpu", rand_torch_dtype=torch.float32, device=None, torch_dtype=None):
+        """
+        Generate Gaussian noise for diffusion process.
+        
+        Args:
+            shape: Tensor shape for noise
+            seed: Random seed for reproducibility  
+            rand_device: Device for random number generation
+            rand_torch_dtype: Data type for random generation
+            device: Target device for final tensor
+            torch_dtype: Target dtype for final tensor
+            
+        Returns:
+            Random noise tensor
+        """
         # Initialize Gaussian noise
         generator = None if seed is None else torch.Generator(rand_device).manual_seed(seed)
         noise = torch.randn(shape, generator=generator, device=rand_device, dtype=rand_torch_dtype)
@@ -139,15 +277,23 @@ class BasePipeline(torch.nn.Module):
 
 
     def enable_cpu_offload(self):
+        """Deprecated method. Use enable_vram_management instead."""
         warnings.warn("`enable_cpu_offload` will be deprecated. Please use `enable_vram_management`.")
         self.vram_management_enabled = True
         
         
     def get_vram(self):
+        """Get total VRAM available on current device in GB."""
         return torch.cuda.mem_get_info(self.device)[1] / (1024 ** 3)
     
     
     def freeze_except(self, model_names):
+        """
+        Freeze all models except specified ones for training.
+        
+        Args:
+            model_names: List of model names to keep trainable
+        """
         for name, model in self.named_children():
             if name in model_names:
                 model.train()
@@ -159,6 +305,22 @@ class BasePipeline(torch.nn.Module):
 
 @dataclass
 class ModelConfig:
+    """
+    Configuration for loading models from various sources.
+    
+    This class provides flexible model loading from:
+    - Local file paths
+    - ModelScope/HuggingFace repositories
+    - Multiple file patterns for large models
+    
+    Attributes:
+        path: Local file path(s) to model
+        model_id: Repository ID for remote download
+        origin_file_pattern: File pattern to download from repository
+        download_resource: Source platform ("ModelScope" or "HuggingFace")
+        offload_device: Device for initial model storage
+        offload_dtype: Data type for model storage
+    """
     path: Union[str, list[str]] = None
     model_id: str = None
     origin_file_pattern: Union[str, list[str]] = None
@@ -168,6 +330,19 @@ class ModelConfig:
     skip_download: bool = False
 
     def download_if_necessary(self, local_model_path="./models", skip_download=False, use_usp=False):
+        """
+        Download model files if not available locally.
+        
+        Handles distributed downloading when using Unified Sequence Parallel (USP):
+        - Only rank 0 downloads files
+        - Other ranks wait for completion
+        - Synchronization via distributed barriers
+        
+        Args:
+            local_model_path: Base directory for model storage
+            skip_download: Skip downloading if files exist
+            use_usp: Whether using Unified Sequence Parallel
+        """
         if self.path is None:
             # Check model_id and origin_file_pattern
             if self.model_id is None:
@@ -217,47 +392,115 @@ class ModelConfig:
 
 
 class WanVideoPipeline(BasePipeline):
+    """
+    Main Wan Video Generation Pipeline.
+    
+    This is the central class for all Wan video generation tasks. It orchestrates
+    multiple neural network components to generate high-quality videos from various inputs.
+    
+    Architecture Overview:
+    - Text Encoder: Processes text prompts into embeddings
+    - Image Encoder: Handles input images for I2V tasks  
+    - DiT (Diffusion Transformer): Core denoising model
+    - VAE: Encodes/decodes between pixel and latent space
+    - Motion Controller: Controls video motion dynamics
+    - VACE: Video editing and completion capabilities
+    - Various Control Units: Modular processing components
+    
+    Supported Generation Modes:
+    1. Text-to-Video (T2V): Generate videos from text descriptions
+    2. Image-to-Video (I2V): Generate videos from input images
+    3. Video-to-Video (V2V): Transform existing videos  
+    4. First-Last Frame: Generate between two frames
+    5. VACE: Video editing with masks and reference images
+    6. Control modes: Camera control, speed control, depth control
+    """
 
     def __init__(self, device="cuda", torch_dtype=torch.bfloat16, tokenizer_path=None):
+        """
+        Initialize the Wan Video Pipeline.
+        
+        Args:
+            device: Computation device 
+            torch_dtype: Data type for computations (bfloat16 recommended)
+            tokenizer_path: Path to tokenizer files
+        """
         super().__init__(
             device=device, torch_dtype=torch_dtype,
             height_division_factor=16, width_division_factor=16, time_division_factor=4, time_division_remainder=1
         )
+        
+        # Initialize core components
         self.scheduler = FlowMatchScheduler(shift=5, sigma_min=0.0, extra_one_step=True)
         self.prompter = WanPrompter(tokenizer_path=tokenizer_path)
-        self.text_encoder: WanTextEncoder = None
-        self.image_encoder: WanImageEncoder = None
-        self.dit: WanModel = None
-        self.vae: WanVideoVAE = None
-        self.motion_controller: WanMotionControllerModel = None
-        self.vace: VaceWanModel = None
+        
+        # Model components (initialized later via from_pretrained)
+        self.text_encoder: WanTextEncoder = None      # T5-based text encoder
+        self.image_encoder: WanImageEncoder = None    # CLIP-based image encoder  
+        self.dit: WanModel = None                     # Diffusion Transformer
+        self.vae: WanVideoVAE = None                  # Video VAE for latent encoding
+        self.motion_controller: WanMotionControllerModel = None  # Motion dynamics
+        self.vace: VaceWanModel = None                # Video editing model
+        
+        # Models that run during each diffusion step
         self.in_iteration_models = ("dit", "motion_controller", "vace")
+        
+        # Processing pipeline: modular units for different tasks
         self.unit_runner = PipelineUnitRunner()
         self.units = [
-            WanVideoUnit_ShapeChecker(),
-            WanVideoUnit_NoiseInitializer(),
-            WanVideoUnit_InputVideoEmbedder(),
-            WanVideoUnit_PromptEmbedder(),
-            WanVideoUnit_ImageEmbedder(),
-            WanVideoUnit_FunControl(),
-            WanVideoUnit_FunReference(),
-            WanVideoUnit_FunCameraControl(),
-            WanVideoUnit_SpeedControl(),
-            WanVideoUnit_VACE(),
-            WanVideoUnit_UnifiedSequenceParallel(),
-            WanVideoUnit_TeaCache(),
-            WanVideoUnit_CfgMerger(),
+            WanVideoUnit_ShapeChecker(),           # Validate input dimensions
+            WanVideoUnit_NoiseInitializer(),       # Initialize noise tensor
+            WanVideoUnit_InputVideoEmbedder(),     # Encode input videos
+            WanVideoUnit_PromptEmbedder(),         # Encode text prompts
+            WanVideoUnit_ImageEmbedder(),          # Encode input images
+            WanVideoUnit_FunControl(),             # Handle control videos
+            WanVideoUnit_FunReference(),           # Handle reference images
+            WanVideoUnit_FunCameraControl(),       # Camera movement control
+            WanVideoUnit_SpeedControl(),           # Motion speed control
+            WanVideoUnit_VACE(),                   # Video editing features
+            WanVideoUnit_UnifiedSequenceParallel(), # Distributed computing
+            WanVideoUnit_TeaCache(),               # Attention caching optimization
+            WanVideoUnit_CfgMerger(),              # Classifier-free guidance merging
         ]
+        
+        # Core model function for diffusion process
         self.model_fn = model_fn_wan_video
         
     
     def load_lora(self, module, path, alpha=1):
+        """
+        Load LoRA (Low-Rank Adaptation) weights for fine-tuning.
+        
+        LoRA allows efficient fine-tuning by adding low-rank matrices to existing layers.
+        This enables style transfer, concept learning, and domain adaptation without
+        retraining the entire model.
+        
+        Args:
+            module: Target model module (e.g., self.dit, self.vace)
+            path: Path to LoRA weight file (.safetensors or .pth)
+            alpha: LoRA scaling factor
+        """
         loader = GeneralLoRALoader(torch_dtype=self.torch_dtype, device=self.device)
         lora = load_state_dict(path, torch_dtype=self.torch_dtype, device=self.device)
         loader.load(module, lora, alpha=alpha)
 
         
     def training_loss(self, **inputs):
+        """
+        Compute training loss for model fine-tuning.
+        
+        Implements the flow matching training objective:
+        1. Sample random timestep
+        2. Add noise to clean data  
+        3. Predict the noise/flow direction
+        4. Compute MSE loss with proper weighting
+        
+        Args:
+            **inputs: Training inputs including latents, noise, prompts, etc.
+            
+        Returns:
+            Weighted MSE loss for backpropagation
+        """
         timestep_id = torch.randint(0, self.scheduler.num_train_timesteps, (1,))
         timestep = self.scheduler.timesteps[timestep_id].to(dtype=self.torch_dtype, device=self.device)
         
@@ -272,6 +515,22 @@ class WanVideoPipeline(BasePipeline):
 
 
     def enable_vram_management(self, num_persistent_param_in_dit=None, vram_limit=None, vram_buffer=0.5):
+        """
+        Enable intelligent VRAM management for large models.
+        
+        This system dynamically offloads/onloads model components based on usage,
+        enabling larger models to run on limited VRAM by moving unused parts to CPU.
+        
+        Strategies:
+        1. Parameter-based: Keep only N parameters of DiT in VRAM
+        2. Limit-based: Maintain VRAM usage below specified threshold
+        3. Automatic offloading: Move unused modules to CPU storage
+        
+        Args:
+            num_persistent_param_in_dit: Number of DiT parameters to keep in VRAM
+            vram_limit: Maximum VRAM usage in GB (auto-detected if None)
+            vram_buffer: Safety buffer in GB
+        """
         self.vram_management_enabled = True
         if num_persistent_param_in_dit is not None:
             vram_limit = None
@@ -279,6 +538,8 @@ class WanVideoPipeline(BasePipeline):
             if vram_limit is None:
                 vram_limit = self.get_vram()
             vram_limit = vram_limit - vram_buffer
+            
+        # Configure VRAM management for each model component
         if self.text_encoder is not None:
             dtype = next(iter(self.text_encoder.parameters())).dtype
             enable_vram_management(
@@ -409,6 +670,16 @@ class WanVideoPipeline(BasePipeline):
             
             
     def initialize_usp(self):
+        """
+        Initialize Unified Sequence Parallel (USP) for distributed computing.
+        
+        USP enables efficient distributed training/inference by:
+        1. Splitting sequences across multiple GPUs
+        2. Using ring-based communication patterns
+        3. Optimizing memory usage through sequence parallelism
+        
+        This is particularly useful for long video generation tasks.
+        """
         import torch.distributed as dist
         from xfuser.core.distributed import initialize_model_parallel, init_distributed_environment
         dist.init_process_group(backend="nccl", init_method="env://")
@@ -422,6 +693,12 @@ class WanVideoPipeline(BasePipeline):
             
             
     def enable_usp(self):
+        """
+        Enable Unified Sequence Parallel by patching attention mechanisms.
+        
+        Replaces standard attention forward functions with USP-aware versions
+        that can split sequences across multiple devices efficiently.
+        """
         from xfuser.core.distributed import get_sequence_parallel_world_size
         from ..distributed.xdit_context_parallel import usp_attn_forward, usp_dit_forward
 
@@ -443,6 +720,28 @@ class WanVideoPipeline(BasePipeline):
         redirect_common_files: bool = True,
         use_usp=False,
     ):
+        """
+        Create WanVideoPipeline from pretrained models.
+        
+        This factory method handles:
+        1. Model downloading from repositories
+        2. Component initialization and loading
+        3. Tokenizer setup
+        4. Optional USP configuration
+        
+        Args:
+            torch_dtype: Computation data type
+            device: Target device
+            model_configs: List of model configurations to load
+            tokenizer_config: Tokenizer configuration
+            local_model_path: Local storage path for models
+            skip_download: Skip downloading if files exist
+            redirect_common_files: Reuse common files across models
+            use_usp: Enable Unified Sequence Parallel
+            
+        Returns:
+            Initialized WanVideoPipeline instance
+        """
         # Redirect model path
         if redirect_common_files:
             redirect_dict = {
@@ -542,18 +841,73 @@ class WanVideoPipeline(BasePipeline):
         # progress_bar
         progress_bar_cmd=tqdm,
     ):
+        """
+        Generate video using the Wan Video pipeline.
+        
+        This is the main inference method supporting all generation modes:
+        
+        Generation Modes:
+        1. Text-to-Video: Only provide 'prompt'
+        2. Image-to-Video: Provide 'prompt' + 'input_image'  
+        3. Video-to-Video: Provide 'prompt' + 'input_video'
+        4. First-Last Frame: Provide 'prompt' + 'input_image' + 'end_image'
+        5. Control Generation: Add 'control_video' for structure guidance
+        6. VACE Editing: Use 'vace_*' parameters for video editing
+        7. Camera Control: Use 'camera_control_*' for camera movement
+        
+        Args:
+            prompt: Text description of desired video
+            negative_prompt: Text describing what to avoid
+            input_image: Starting image for I2V generation
+            end_image: Ending image for FLF2V generation
+            input_video: Input video for V2V transformation
+            denoising_strength: How much to modify input (0=no change, 1=full generation)
+            control_video: Structure/pose control video
+            reference_image: Reference image for style/appearance
+            camera_control_direction: Camera movement direction
+            camera_control_speed: Speed of camera movement
+            camera_control_origin: Initial camera parameters
+            vace_video: Video for VACE editing
+            vace_video_mask: Mask for VACE editing regions
+            vace_reference_image: Reference for VACE editing
+            vace_scale: Strength of VACE conditioning
+            seed: Random seed for reproducibility
+            rand_device: Device for random number generation
+            height: Output video height
+            width: Output video width  
+            num_frames: Number of frames to generate
+            cfg_scale: Classifier-free guidance strength
+            cfg_merge: Merge positive/negative CFG in single batch
+            num_inference_steps: Number of denoising steps
+            sigma_shift: Noise schedule shift parameter
+            motion_bucket_id: Motion intensity control
+            tiled: Use tiled VAE processing for memory efficiency
+            tile_size: Size of VAE tiles
+            tile_stride: Stride between VAE tiles
+            sliding_window_size: Size of temporal sliding window
+            sliding_window_stride: Stride of temporal sliding window
+            tea_cache_l1_thresh: TeaCache optimization threshold
+            tea_cache_model_id: Model ID for TeaCache
+            progress_bar_cmd: Progress bar display function
+            
+        Returns:
+            List of PIL Images representing the generated video
+        """
         # Scheduler
         self.scheduler.set_timesteps(num_inference_steps, denoising_strength=denoising_strength, shift=sigma_shift)
         
-        # Inputs
+        # Organize inputs for processing pipeline
+        # Positive conditioning (for main generation)
         inputs_posi = {
             "prompt": prompt,
             "tea_cache_l1_thresh": tea_cache_l1_thresh, "tea_cache_model_id": tea_cache_model_id, "num_inference_steps": num_inference_steps,
         }
+        # Negative conditioning (for CFG)
         inputs_nega = {
             "negative_prompt": negative_prompt,
             "tea_cache_l1_thresh": tea_cache_l1_thresh, "tea_cache_model_id": tea_cache_model_id, "num_inference_steps": num_inference_steps,
         }
+        # Shared parameters (used for both positive and negative)
         inputs_shared = {
             "input_image": input_image,
             "end_image": end_image,
@@ -569,10 +923,12 @@ class WanVideoPipeline(BasePipeline):
             "tiled": tiled, "tile_size": tile_size, "tile_stride": tile_stride,
             "sliding_window_size": sliding_window_size, "sliding_window_stride": sliding_window_stride,
         }
+        
+        # Process inputs through modular pipeline units
         for unit in self.units:
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(unit, self, inputs_shared, inputs_posi, inputs_nega)
 
-        # Denoise
+        # Main denoising loop
         self.load_models_to_device(self.in_iteration_models)
         models = {name: getattr(self, name) for name in self.in_iteration_models}
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
@@ -605,8 +961,26 @@ class WanVideoPipeline(BasePipeline):
         return video
 
 
+# === PIPELINE UNIT SYSTEM ===
+# The following classes implement a modular processing system where each unit
+# handles a specific aspect of video generation (shape checking, encoding, etc.)
 
 class PipelineUnit:
+    """
+    Base class for modular pipeline processing units.
+    
+    Each unit handles a specific aspect of the generation pipeline:
+    - Input validation and preprocessing
+    - Model-specific encoding
+    - Feature extraction and conditioning
+    - Advanced optimizations
+    
+    This modular design allows:
+    - Easy addition of new features
+    - Independent testing of components  
+    - Flexible pipeline composition
+    - Better code organization
+    """
     def __init__(
         self,
         seperate_cfg: bool = False,
@@ -616,6 +990,17 @@ class PipelineUnit:
         input_params_nega: dict[str, str] = None,
         onload_model_names: tuple[str] = None
     ):
+        """
+        Initialize pipeline unit.
+        
+        Args:
+            seperate_cfg: Whether to process positive/negative prompts separately
+            take_over: Whether this unit completely handles the processing
+            input_params: Parameters to extract from shared inputs
+            input_params_posi: Positive-specific parameter mapping
+            input_params_nega: Negative-specific parameter mapping  
+            onload_model_names: Models to load before processing
+        """
         self.seperate_cfg = seperate_cfg
         self.take_over = take_over
         self.input_params = input_params
@@ -625,15 +1010,48 @@ class PipelineUnit:
 
 
     def process(self, pipe: WanVideoPipeline, inputs: dict, positive=True, **kwargs) -> dict:
+        """
+        Process inputs through this unit.
+        
+        Args:
+            pipe: Pipeline instance
+            inputs: Input dictionary
+            positive: Whether processing positive conditioning
+            **kwargs: Additional arguments
+            
+        Returns:
+            Dictionary of processed outputs
+        """
         raise NotImplementedError("`process` is not implemented.")
 
 
-
 class PipelineUnitRunner:
+    """
+    Orchestrates execution of pipeline units with proper input/output handling.
+    
+    Manages:
+    - Parameter routing between units
+    - Model loading for unit requirements
+    - CFG-aware processing (positive/negative)
+    - Input/output dictionary management
+    """
     def __init__(self):
         pass
 
     def __call__(self, unit: PipelineUnit, pipe: WanVideoPipeline, inputs_shared: dict, inputs_posi: dict, inputs_nega: dict) -> tuple[dict, dict]:
+        """
+        Execute a pipeline unit with proper input routing.
+        
+        Args:
+            unit: Unit to execute
+            pipe: Pipeline instance
+            inputs_shared: Shared parameters
+            inputs_posi: Positive conditioning parameters
+            inputs_nega: Negative conditioning parameters
+            
+        Returns:
+            Updated (inputs_shared, inputs_posi, inputs_nega)
+        """
         if unit.take_over:
             # Let the pipeline unit take over this function.
             inputs_shared, inputs_posi, inputs_nega = unit.process(pipe, inputs_shared=inputs_shared, inputs_posi=inputs_posi, inputs_nega=inputs_nega)
@@ -662,8 +1080,17 @@ class PipelineUnitRunner:
         return inputs_shared, inputs_posi, inputs_nega
 
 
+# === SPECIFIC PIPELINE UNITS ===
 
 class WanVideoUnit_ShapeChecker(PipelineUnit):
+    """
+    Validates and adjusts input dimensions to meet model requirements.
+    
+    Ensures height, width, and frame count are compatible with:
+    - VAE encoding factors (typically 8x downsampling)
+    - Temporal compression (4x temporal downsampling)
+    - Model architecture constraints
+    """
     def __init__(self):
         super().__init__(input_params=("height", "width", "num_frames"))
 
@@ -672,8 +1099,15 @@ class WanVideoUnit_ShapeChecker(PipelineUnit):
         return {"height": height, "width": width, "num_frames": num_frames}
 
 
-
 class WanVideoUnit_NoiseInitializer(PipelineUnit):
+    """
+    Initialize random noise tensor for diffusion process.
+    
+    Creates Gaussian noise in latent space with proper dimensions:
+    - Spatial: (height//8, width//8) due to VAE encoding
+    - Temporal: (num_frames-1)//4 + 1 due to temporal compression  
+    - Channels: 16 latent channels for Wan models
+    """
     def __init__(self):
         super().__init__(input_params=("height", "width", "num_frames", "seed", "rand_device", "vace_reference_image"))
 
@@ -687,8 +1121,16 @@ class WanVideoUnit_NoiseInitializer(PipelineUnit):
         return {"noise": noise}
     
 
-
 class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
+    """
+    Encode input videos into latent space using VAE.
+    
+    Handles:
+    - Video-to-video generation (encode input video)
+    - VACE reference frames (special handling)
+    - Noise scheduling for denoising strength control
+    - Training vs inference mode differences
+    """
     def __init__(self):
         super().__init__(
             input_params=("input_video", "noise", "tiled", "tile_size", "tile_stride", "vace_reference_image"),
@@ -712,8 +1154,16 @@ class WanVideoUnit_InputVideoEmbedder(PipelineUnit):
             return {"latents": latents}
 
 
-
 class WanVideoUnit_PromptEmbedder(PipelineUnit):
+    """
+    Encode text prompts into embeddings using T5 text encoder.
+    
+    Handles:
+    - Positive and negative prompt encoding separately
+    - T5-XXL encoder for rich semantic understanding
+    - Proper tokenization and padding
+    - CFG-aware processing
+    """
     def __init__(self):
         super().__init__(
             seperate_cfg=True,
@@ -728,8 +1178,16 @@ class WanVideoUnit_PromptEmbedder(PipelineUnit):
         return {"context": prompt_emb}
 
 
-
 class WanVideoUnit_ImageEmbedder(PipelineUnit):
+    """
+    Encode input images for image-to-video generation.
+    
+    Handles:
+    - CLIP image encoding for semantic conditioning
+    - VAE image encoding for structural conditioning
+    - First-last frame video generation (FLF2V)
+    - Proper masking and positioning
+    """
     def __init__(self):
         super().__init__(
             input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride"),
@@ -766,8 +1224,16 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
         return {"clip_feature": clip_context, "y": y}
 
         
- 
 class WanVideoUnit_FunControl(PipelineUnit):
+    """
+    Handle control video conditioning (pose, depth, edges, etc.).
+    
+    Control videos provide structural guidance for generation:
+    - Pose control: Human/animal pose sequences
+    - Depth control: Depth map sequences  
+    - Edge control: Edge/line art sequences
+    - Custom control: User-defined control signals
+    """
     def __init__(self):
         super().__init__(
             input_params=("control_video", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride", "clip_feature", "y"),
@@ -790,8 +1256,16 @@ class WanVideoUnit_FunControl(PipelineUnit):
         return {"clip_feature": clip_feature, "y": y}
     
 
-
 class WanVideoUnit_FunReference(PipelineUnit):
+    """
+    Handle reference image conditioning for style/appearance control.
+    
+    Reference images provide:
+    - Style guidance (artistic style, color palette)
+    - Character consistency (face, clothing, appearance)
+    - Scene consistency (lighting, atmosphere)
+    - Object appearance (texture, materials)
+    """
     def __init__(self):
         super().__init__(
             input_params=("reference_image", "height", "width", "reference_image"),
@@ -810,8 +1284,17 @@ class WanVideoUnit_FunReference(PipelineUnit):
         return {"reference_latents": reference_latents, "clip_feature": clip_feature}
 
 
-
 class WanVideoUnit_FunCameraControl(PipelineUnit):
+    """
+    Generate camera movement conditioning for cinematic effects.
+    
+    Camera controls include:
+    - Pan movements (left, right, up, down)
+    - Diagonal movements (combinations)
+    - Zoom in/out effects
+    - Speed control for movement
+    - Custom camera trajectories
+    """
     def __init__(self):
         super().__init__(
             input_params=("height", "width", "num_frames", "camera_control_direction", "camera_control_speed", "camera_control_origin", "latents", "input_image")
@@ -844,8 +1327,16 @@ class WanVideoUnit_FunCameraControl(PipelineUnit):
         return {"control_camera_latents_input": control_camera_latents_input, "y": y}
 
 
-
 class WanVideoUnit_SpeedControl(PipelineUnit):
+    """
+    Control motion speed/intensity in generated videos.
+    
+    Motion control parameters:
+    - motion_bucket_id: Discrete speed levels (0=slow, higher=faster)
+    - Continuous speed control through motion controller
+    - Frame rate adjustment
+    - Temporal consistency preservation
+    """
     def __init__(self):
         super().__init__(input_params=("motion_bucket_id",))
 
@@ -856,8 +1347,17 @@ class WanVideoUnit_SpeedControl(PipelineUnit):
         return {"motion_bucket_id": motion_bucket_id}
 
 
-
 class WanVideoUnit_VACE(PipelineUnit):
+    """
+    Video Editing and Completion Engine (VACE) processing.
+    
+    VACE capabilities:
+    - Video inpainting: Fill missing regions using masks
+    - Video outpainting: Extend video boundaries  
+    - Object removal/addition: Edit specific objects
+    - Style transfer: Change video style while preserving structure
+    - Temporal consistency: Maintain coherence across frames
+    """
     def __init__(self):
         super().__init__(
             input_params=("vace_video", "vace_video_mask", "vace_reference_image", "vace_scale", "height", "width", "num_frames", "tiled", "tile_size", "tile_stride"),
@@ -907,8 +1407,16 @@ class WanVideoUnit_VACE(PipelineUnit):
             return {"vace_context": None, "vace_scale": vace_scale}
 
 
-
 class WanVideoUnit_UnifiedSequenceParallel(PipelineUnit):
+    """
+    Configure Unified Sequence Parallel processing.
+    
+    USP enables efficient distributed processing by:
+    - Splitting long sequences across multiple GPUs
+    - Ring-based communication for memory efficiency
+    - Overlap computation and communication
+    - Scale to very long videos (hundreds of frames)
+    """
     def __init__(self):
         super().__init__(input_params=())
 
@@ -919,8 +1427,16 @@ class WanVideoUnit_UnifiedSequenceParallel(PipelineUnit):
         return {}
 
 
-
 class WanVideoUnit_TeaCache(PipelineUnit):
+    """
+    Configure TeaCache optimization for faster inference.
+    
+    TeaCache reduces computation by:
+    - Caching attention weights across timesteps
+    - Reusing similar computations when inputs are similar
+    - Adaptive caching based on input change thresholds
+    - Model-specific optimization coefficients
+    """
     def __init__(self):
         super().__init__(
             seperate_cfg=True,
@@ -934,8 +1450,16 @@ class WanVideoUnit_TeaCache(PipelineUnit):
         return {"tea_cache": TeaCache(num_inference_steps, rel_l1_thresh=tea_cache_l1_thresh, model_id=tea_cache_model_id)}
 
 
-
 class WanVideoUnit_CfgMerger(PipelineUnit):
+    """
+    Merge positive and negative conditioning for efficient CFG processing.
+    
+    When cfg_merge=True:
+    - Concatenates positive and negative inputs into single batch
+    - Processes both conditioning types in one forward pass
+    - Reduces VRAM usage and computation time
+    - Splits outputs back for CFG calculation
+    """
     def __init__(self):
         super().__init__(take_over=True)
         self.concat_tensor_names = ["context", "clip_feature", "y", "reference_latents"]
@@ -956,9 +1480,32 @@ class WanVideoUnit_CfgMerger(PipelineUnit):
         return inputs_shared, inputs_posi, inputs_nega
 
 
+# === OPTIMIZATION CLASSES ===
 
 class TeaCache:
+    """
+    TeaCache: Temporal Attention Caching for faster video generation.
+    
+    This optimization technique caches attention computations when:
+    1. Input changes are below a threshold (indicating similarity)
+    2. Previous computations can be reused
+    3. Model-specific coefficients determine caching effectiveness
+    
+    Benefits:
+    - 2-3x speedup for video generation
+    - Maintains quality while reducing computation
+    - Adaptive thresholding based on content changes
+    - Model-specific optimization parameters
+    """
     def __init__(self, num_inference_steps, rel_l1_thresh, model_id):
+        """
+        Initialize TeaCache with model-specific parameters.
+        
+        Args:
+            num_inference_steps: Total denoising steps
+            rel_l1_thresh: Threshold for caching decision
+            model_id: Model ID for coefficient lookup
+        """
         self.num_inference_steps = num_inference_steps
         self.step = 0
         self.accumulated_rel_l1_distance = 0
@@ -967,6 +1514,7 @@ class TeaCache:
         self.previous_residual = None
         self.previous_hidden_states = None
         
+        # Model-specific optimization coefficients
         self.coefficients_dict = {
             "Wan2.1-T2V-1.3B": [-5.21862437e+04, 9.23041404e+03, -5.28275948e+02, 1.36987616e+01, -4.99875664e-02],
             "Wan2.1-T2V-14B": [-3.03318725e+05, 4.90537029e+04, -2.65530556e+03, 5.87365115e+01, -3.15583525e-01],
@@ -979,6 +1527,17 @@ class TeaCache:
         self.coefficients = self.coefficients_dict[model_id]
 
     def check(self, dit: WanModel, x, t_mod):
+        """
+        Check whether to use cached computation or compute fresh.
+        
+        Args:
+            dit: DiT model instance
+            x: Current hidden states
+            t_mod: Time modulation tensor
+            
+        Returns:
+            True if should use cache, False if should compute
+        """
         modulated_inp = t_mod.clone()
         if self.step == 0 or self.step == self.num_inference_steps - 1:
             should_calc = True
@@ -1001,20 +1560,37 @@ class TeaCache:
         return not should_calc
 
     def store(self, hidden_states):
+        """Store residual for cache updates."""
         self.previous_residual = hidden_states - self.previous_hidden_states
         self.previous_hidden_states = None
 
     def update(self, hidden_states):
+        """Update hidden states using cached residual."""
         hidden_states = hidden_states + self.previous_residual
         return hidden_states
 
 
-
 class TemporalTiler_BCTHW:
+    """
+    Temporal tiling for processing long videos with sliding windows.
+    
+    This technique processes long videos in overlapping segments:
+    1. Split video into overlapping temporal windows
+    2. Process each window independently
+    3. Blend overlapping regions with proper weighting
+    4. Reconstruct full video from processed segments
+    
+    Benefits:
+    - Process arbitrarily long videos
+    - Maintain temporal consistency
+    - Reduce peak memory usage
+    - Parallel processing of segments
+    """
     def __init__(self):
         pass
 
     def build_1d_mask(self, length, left_bound, right_bound, border_width):
+        """Build 1D blending mask for segment boundaries."""
         x = torch.ones((length,))
         if not left_bound:
             x[:border_width] = (torch.arange(border_width) + 1) / border_width
@@ -1023,12 +1599,29 @@ class TemporalTiler_BCTHW:
         return x
 
     def build_mask(self, data, is_bound, border_width):
+        """Build temporal blending mask for current segment."""
         _, _, T, _, _ = data.shape
         t = self.build_1d_mask(T, is_bound[0], is_bound[1], border_width[0])
         mask = repeat(t, "T -> 1 1 T 1 1")
         return mask
     
     def run(self, model_fn, sliding_window_size, sliding_window_stride, computation_device, computation_dtype, model_kwargs, tensor_names, batch_size=None):
+        """
+        Process video using sliding window with blending.
+        
+        Args:
+            model_fn: Model function to apply
+            sliding_window_size: Size of temporal window
+            sliding_window_stride: Stride between windows
+            computation_device: Device for computation
+            computation_dtype: Data type for computation
+            model_kwargs: Model arguments
+            tensor_names: Names of tensors to tile
+            batch_size: Batch size multiplier for CFG
+            
+        Returns:
+            Processed video tensor
+        """
         tensor_names = [tensor_name for tensor_name in tensor_names if model_kwargs.get(tensor_name) is not None]
         tensor_dict = {tensor_name: model_kwargs[tensor_name] for tensor_name in tensor_names}
         B, C, T, H, W = tensor_dict[tensor_names[0]].shape
@@ -1058,7 +1651,6 @@ class TemporalTiler_BCTHW:
         return value
 
 
-
 def model_fn_wan_video(
     dit: WanModel,
     motion_controller: WanMotionControllerModel = None,
@@ -1082,6 +1674,45 @@ def model_fn_wan_video(
     control_camera_latents_input = None,
     **kwargs,
 ):
+    """
+    Core model function for Wan Video generation.
+    
+    This function orchestrates the diffusion transformer (DiT) and associated
+    components to perform one denoising step. It handles:
+    
+    1. Input preprocessing and conditioning
+    2. Temporal tiling for long videos
+    3. Model forward pass with various conditionings
+    4. Advanced optimizations (TeaCache, USP, gradient checkpointing)
+    5. Output postprocessing
+    
+    Args:
+        dit: Diffusion Transformer model
+        motion_controller: Motion dynamics controller
+        vace: Video editing model
+        latents: Noisy latent tensor to denoise
+        timestep: Current diffusion timestep
+        context: Text conditioning from T5 encoder
+        clip_feature: Image conditioning from CLIP encoder
+        y: Additional conditioning (masks, control signals)
+        reference_latents: Reference image latents
+        vace_context: VACE editing context
+        vace_scale: VACE conditioning strength
+        tea_cache: TeaCache optimization instance
+        use_unified_sequence_parallel: Enable USP
+        motion_bucket_id: Motion speed control
+        sliding_window_size: Temporal window size
+        sliding_window_stride: Temporal window stride
+        cfg_merge: Whether positive/negative are merged
+        use_gradient_checkpointing: Enable gradient checkpointing
+        use_gradient_checkpointing_offload: Offload checkpointed activations
+        control_camera_latents_input: Camera control conditioning
+        **kwargs: Additional arguments
+        
+    Returns:
+        Predicted noise/flow direction tensor
+    """
+    # Use sliding window for long videos
     if sliding_window_size is not None and sliding_window_stride is not None:
         model_kwargs = dict(
             dit=dit,
@@ -1108,35 +1739,41 @@ def model_fn_wan_video(
             batch_size=2 if cfg_merge else 1
         )
     
+    # Initialize USP if enabled
     if use_unified_sequence_parallel:
         import torch.distributed as dist
         from xfuser.core.distributed import (get_sequence_parallel_rank,
                                             get_sequence_parallel_world_size,
                                             get_sp_group)
     
+    # Process time conditioning
     t = dit.time_embedding(sinusoidal_embedding_1d(dit.freq_dim, timestep))
     t_mod = dit.time_projection(t).unflatten(1, (6, dit.dim))
+    
+    # Add motion control if available
     if motion_bucket_id is not None and motion_controller is not None:
         t_mod = t_mod + motion_controller(motion_bucket_id).unflatten(1, (6, dit.dim))
+    
+    # Process text conditioning
     context = dit.text_embedding(context)
 
     x = latents
-    # Merged cfg
+    # Handle merged CFG (positive and negative in same batch)
     if x.shape[0] != context.shape[0]:
         x = torch.concat([x] * context.shape[0], dim=0)
     if timestep.shape[0] != context.shape[0]:
         timestep = torch.concat([timestep] * context.shape[0], dim=0)
     
+    # Add image conditioning if available
     if dit.has_image_input:
         x = torch.cat([x, y], dim=1)  # (b, c_x + c_y, f, h, w)
         clip_embdding = dit.img_emb(clip_feature)
         context = torch.cat([clip_embdding, context], dim=1)
     
-    # Add camera control
+    # Patchify inputs and add camera control
     x, (f, h, w) = dit.patchify(x, control_camera_latents_input)
 
-    
-    # Reference image
+    # Add reference image conditioning
     if reference_latents is not None:
         if len(reference_latents.shape) == 5:
             reference_latents = reference_latents[:, :, 0]
@@ -1144,28 +1781,32 @@ def model_fn_wan_video(
         x = torch.concat([reference_latents, x], dim=1)
         f += 1
     
+    # Generate positional embeddings
     freqs = torch.cat([
         dit.freqs[0][:f].view(f, 1, 1, -1).expand(f, h, w, -1),
         dit.freqs[1][:h].view(1, h, 1, -1).expand(f, h, w, -1),
         dit.freqs[2][:w].view(1, 1, w, -1).expand(f, h, w, -1)
     ], dim=-1).reshape(f * h * w, 1, -1).to(x.device)
     
-    # TeaCache
+    # TeaCache optimization check
     if tea_cache is not None:
         tea_cache_update = tea_cache.check(dit, x, t_mod)
     else:
         tea_cache_update = False
         
+    # VACE conditioning preparation
     if vace_context is not None:
         vace_hints = vace(x, vace_context, context, t_mod, freqs)
     
-    # blocks
+    # Process through transformer blocks
     if use_unified_sequence_parallel:
         if dist.is_initialized() and dist.get_world_size() > 1:
             x = torch.chunk(x, get_sequence_parallel_world_size(), dim=1)[get_sequence_parallel_rank()]
     if tea_cache_update:
+        # Use cached computation
         x = tea_cache.update(x)
     else:
+        # Full computation through transformer blocks
         def create_custom_forward(module):
             def custom_forward(*inputs):
                 return module(*inputs)
@@ -1173,6 +1814,7 @@ def model_fn_wan_video(
         
         for block_id, block in enumerate(dit.blocks):
             if use_gradient_checkpointing_offload:
+                # Gradient checkpointing with CPU offload
                 with torch.autograd.graph.save_on_cpu():
                     x = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
@@ -1180,13 +1822,17 @@ def model_fn_wan_video(
                         use_reentrant=False,
                     )
             elif use_gradient_checkpointing:
+                # Standard gradient checkpointing
                 x = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
                     x, context, t_mod, freqs,
                     use_reentrant=False,
                 )
             else:
+                # Normal forward pass
                 x = block(x, context, t_mod, freqs)
+                
+            # Apply VACE hints at specific layers
             if vace_context is not None and block_id in vace.vace_layers_mapping:
                 current_vace_hint = vace_hints[vace.vace_layers_mapping[block_id]]
                 if use_unified_sequence_parallel and dist.is_initialized() and dist.get_world_size() > 1:
@@ -1195,10 +1841,14 @@ def model_fn_wan_video(
         if tea_cache is not None:
             tea_cache.store(x)
             
+    # Final output projection
     x = dit.head(x, t)
+    
+    # Gather USP results
     if use_unified_sequence_parallel:
         if dist.is_initialized() and dist.get_world_size() > 1:
             x = get_sp_group().all_gather(x, dim=1)
+            
     # Remove reference latents
     if reference_latents is not None:
         x = x[:, reference_latents.shape[1]:]

@@ -317,13 +317,13 @@ class WanModel(torch.nn.Module):
             self.control_adapter = None
 
     def patchify(self, x: torch.Tensor,control_camera_latents_input: torch.Tensor = None):
-        x = self.patch_embedding(x)
+        x = self.patch_embedding(x) # 1, 16, 22, 60, 104 -> 1, 1536, 22, 30, 52
         if self.control_adapter is not None and control_camera_latents_input is not None:
             y_camera = self.control_adapter(control_camera_latents_input)
             x = [u + v for u, v in zip(x, y_camera)]
             x = x[0].unsqueeze(0)
         grid_size = x.shape[2:]
-        x = rearrange(x, 'b c f h w -> b (f h w) c').contiguous()
+        x = rearrange(x, 'b c f h w -> b (f h w) c').contiguous() # 1, 34320, 1536
         return x, grid_size  # x, grid_size: (f, h, w)
 
     def unpatchify(self, x: torch.Tensor, grid_size: torch.Tensor):
