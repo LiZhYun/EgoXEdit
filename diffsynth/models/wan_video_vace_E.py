@@ -986,6 +986,9 @@ class VaceWanModel(torch.nn.Module):
             # Process hand motion if available
             motion_features = None
             if hand_motion_sequence is not None:
+                # Ensure hand motion encoder is on correct device
+                self.hand_motion_encoder = self.hand_motion_encoder.to(model_device)
+                
                 # Split dual-hand motion sequence: [left_wrist(9), right_wrist(9), left_gripper(1), right_gripper(1)]
                 # Expected input shape: [batch, seq_len, 20]
                 left_wrist_poses = hand_motion_sequence[:, :, :9]       # First 9 dims: left wrist pose
@@ -1004,11 +1007,23 @@ class VaceWanModel(torch.nn.Module):
             # Process object trajectories if available
             trajectory_features = None
             if object_trajectory_sequence is not None:
+                # Ensure object trajectory encoder is on correct device
+                self.object_trajectory_encoder = self.object_trajectory_encoder.to(model_device)
+                
                 trajectory_features = self.object_trajectory_encoder(
                     trajectory_sequence=object_trajectory_sequence, object_ids=object_ids, mask=trajectory_mask
                 )
             
             # Fuse all task modalities
+            # Ensure all features are on the same device before fusion
+            if motion_features is not None:
+                motion_features = motion_features.to(model_device)
+            if trajectory_features is not None:
+                trajectory_features = trajectory_features.to(model_device)
+                
+            # Ensure task fusion module is on correct device
+            self.task_fusion = self.task_fusion.to(model_device)
+                
             task_features = self.task_fusion(
                 text_features=text_features,
                 motion_features=motion_features,
