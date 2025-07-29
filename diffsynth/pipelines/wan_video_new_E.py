@@ -2017,19 +2017,28 @@ def model_fn_wan_video(
     
     # VACE-E conditioning preparation (enhanced with task-embodiment fusion)
     if vace_e_context is not None and vace_e is not None:
+        # Ensure all tensors in VACE-E context are on the correct device
+        device = next(vace_e.parameters()).device
+        vace_e_context_device = {}
+        for key, value in vace_e_context.items():
+            if isinstance(value, torch.Tensor):
+                vace_e_context_device[key] = value.to(device)
+            else:
+                vace_e_context_device[key] = value
+        
         # Extract task and embodiment features from VACE-E context
         vace_e_hints = vace_e(
             x, None, context, t_mod, freqs,  # x, vace_context (None for VACE-E), context, t_mod, freqs
             # Task features
-            text_features=vace_e_context.get("text_features"),
-            hand_motion_sequence=vace_e_context.get("hand_motion_sequence"),
-            object_trajectory_sequence=vace_e_context.get("object_trajectory_sequence"),
-            object_ids=vace_e_context.get("object_ids"),
-            text_mask=vace_e_context.get("text_mask"),
-            motion_mask=vace_e_context.get("motion_mask"),
-            trajectory_mask=vace_e_context.get("trajectory_mask"),
+            text_features=vace_e_context_device.get("text_features"),
+            hand_motion_sequence=vace_e_context_device.get("hand_motion_sequence"),
+            object_trajectory_sequence=vace_e_context_device.get("object_trajectory_sequence"),
+            object_ids=vace_e_context_device.get("object_ids"),
+            text_mask=vace_e_context_device.get("text_mask"),
+            motion_mask=vace_e_context_device.get("motion_mask"),
+            trajectory_mask=vace_e_context_device.get("trajectory_mask"),
             # Embodiment features
-            embodiment_image_features=vace_e_context.get("embodiment_image_features"),
+            embodiment_image_features=vace_e_context_device.get("embodiment_image_features"),
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
         )
