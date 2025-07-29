@@ -509,9 +509,11 @@ for episode_idx, episode_data in enumerate(robot_episodes):
     # 3. Prepare object trajectory sequence
     if episode_data['object_trajectory_sequence'] is not None:
         vace_e_object_trajectory_sequence = episode_data['object_trajectory_sequence'].unsqueeze(0).to(pipe.device)
-        vace_e_object_ids = episode_data['object_ids'].to(pipe.device)
+        # Fix: object_ids should be 2D [batch_size, num_objects] not 1D
+        vace_e_object_ids = episode_data['object_ids'].unsqueeze(0).to(pipe.device)  # Add batch dimension
         vace_e_trajectory_mask = torch.ones(1, vace_e_object_trajectory_sequence.shape[1], vace_e_object_trajectory_sequence.shape[2], device=pipe.device).bool()
         print(f"✓ Object trajectory shape: {vace_e_object_trajectory_sequence.shape}")
+        print(f"✓ Object IDs shape: {vace_e_object_ids.shape} (should be [batch_size, num_objects])")
         print(f"✓ Object IDs: {vace_e_object_ids}")
     
     # 4. Prepare embodiment features (end-effector image)
