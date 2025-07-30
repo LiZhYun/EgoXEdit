@@ -641,23 +641,23 @@ class WanVideoPipeline(BasePipeline):
                 else:
                     embodiment_reduced = embodiment_features
                 
-                # Further reduce dimensions if still too large (limit to max 512 per feature)
-                max_dim = 512
-                if task_reduced.shape[-1] > max_dim:
-                    # Simple linear projection to reduce dimension
-                    if not hasattr(self, 'task_dim_reducer'):
-                        self.task_dim_reducer = torch.nn.Linear(task_reduced.shape[-1], max_dim).to(self.device)
-                        print(f"Created task dimension reducer: {task_reduced.shape[-1]} -> {max_dim}")
-                    task_reduced = self.task_dim_reducer(task_reduced)
+                # # Further reduce dimensions if still too large (limit to max 512 per feature)
+                # max_dim = 512
+                # if task_reduced.shape[-1] > max_dim:
+                #     # Simple linear projection to reduce dimension
+                #     if not hasattr(self, 'task_dim_reducer'):
+                #         self.task_dim_reducer = torch.nn.Linear(task_reduced.shape[-1], max_dim).to(device=self.device, dtype=self.torch_dtype)
+                #         print(f"Created task dimension reducer: {task_reduced.shape[-1]} -> {max_dim}")
+                #     task_reduced = self.task_dim_reducer(task_reduced)
                     
-                if embodiment_reduced.shape[-1] > max_dim:
-                    # Simple linear projection to reduce dimension
-                    if not hasattr(self, 'embodiment_dim_reducer'):
-                        self.embodiment_dim_reducer = torch.nn.Linear(embodiment_reduced.shape[-1], max_dim).to(self.device)
-                        print(f"Created embodiment dimension reducer: {embodiment_reduced.shape[-1]} -> {max_dim}")
-                    embodiment_reduced = self.embodiment_dim_reducer(embodiment_reduced)
+                # if embodiment_reduced.shape[-1] > max_dim:
+                #     # Simple linear projection to reduce dimension
+                #     if not hasattr(self, 'embodiment_dim_reducer'):
+                #         self.embodiment_dim_reducer = torch.nn.Linear(embodiment_reduced.shape[-1], max_dim).to(device=self.device, dtype=self.torch_dtype)
+                #         print(f"Created embodiment dimension reducer: {embodiment_reduced.shape[-1]} -> {max_dim}")
+                #     embodiment_reduced = self.embodiment_dim_reducer(embodiment_reduced)
                 
-                print(f"Reduced feature shapes: task={task_reduced.shape}, embodiment={embodiment_reduced.shape}")
+                # print(f"Reduced feature shapes: task={task_reduced.shape}, embodiment={embodiment_reduced.shape}")
                 
                 # Initialize CLUB estimator if not already done
                 if self.club_estimator is None:
@@ -667,14 +667,16 @@ class WanVideoPipeline(BasePipeline):
                     hidden_size = min(256, max(task_dim, embodiment_dim))  # Conservative hidden size
                     
                     print(f"CLUB dimensions: task_dim={task_dim}, embodiment_dim={embodiment_dim}, hidden_size={hidden_size}")
-                    self.club_estimator = CLUB(task_dim, embodiment_dim, hidden_size).to(self.device)
+                    self.club_estimator = CLUB(task_dim, embodiment_dim, hidden_size).to(device=self.device, dtype=self.torch_dtype)
                     # Initialize CLUB optimizer
                     self.club_optimizer = torch.optim.Adam(self.club_estimator.parameters(), lr=getattr(self, 'club_lr', 1e-3))
-                    print(f"🎯 Initialized CLUB estimator successfully!")
+                    print(f"🎯 Initialized CLUB estimator with dtype {self.torch_dtype} successfully!")
                 
                 # Use reduced features for CLUB computation (already 2D)
-                task_flat = task_reduced
-                embodiment_flat = embodiment_reduced
+                # Ensure features have the correct dtype for CLUB computation
+                task_flat = task_reduced.to(dtype=self.torch_dtype)
+                embodiment_flat = embodiment_reduced.to(dtype=self.torch_dtype)
+                print(f"Final features for CLUB: task_flat={task_flat.shape} {task_flat.dtype}, embodiment_flat={embodiment_flat.shape} {embodiment_flat.dtype}")
                 
                 # Phase 1: Train CLUB estimator to approximate q_θ(embodiment|task)
                 if training_step % self.club_update_freq == 0:
