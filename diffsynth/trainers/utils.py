@@ -340,10 +340,17 @@ class DiffusionTrainingModule(torch.nn.Module):
         state_dict = {name: param for name, param in state_dict.items() if name in trainable_param_names}
         if remove_prefix is not None:
             state_dict_ = {}
+            # Support comma-separated multiple prefixes
+            prefixes = [p.strip() for p in remove_prefix.split(',')] if ',' in remove_prefix else [remove_prefix]
+            
             for name, param in state_dict.items():
-                if name.startswith(remove_prefix):
-                    name = name[len(remove_prefix):]
-                state_dict_[name] = param
+                new_name = name
+                # Try to remove any matching prefix
+                for prefix in prefixes:
+                    if name.startswith(prefix):
+                        new_name = name[len(prefix):]
+                        break
+                state_dict_[new_name] = param
             state_dict = state_dict_
         return state_dict
 
