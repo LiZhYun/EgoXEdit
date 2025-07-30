@@ -559,7 +559,7 @@ class WanVideoPipeline(BasePipeline):
         loader.load(module, lora, alpha=alpha)
 
         
-    def training_loss(self, training_step=0, **inputs):
+    def training_loss(self, training_step=0, return_detailed_losses=False, **inputs):
         """
         Compute training loss for model fine-tuning with CLUB-based mutual information minimization.
         
@@ -572,13 +572,15 @@ class WanVideoPipeline(BasePipeline):
         
         Args:
             training_step: Current training step (for CLUB estimator updates)
+            return_detailed_losses: If True, return dict with loss breakdown; if False, return scalar total_loss
             **inputs: Training inputs including latents, noise, prompts, VACE-E features, etc.
             
         Returns:
-            Dict containing:
+            If return_detailed_losses=True: Dict containing:
                 - 'total_loss': Combined loss for backpropagation
                 - 'flow_loss': Flow matching loss component  
                 - 'club_loss': CLUB mutual information loss component
+            If return_detailed_losses=False: Scalar tensor (total_loss) for training framework
         """
         timestep_id = torch.randint(0, self.scheduler.num_train_timesteps, (1,))
         timestep = self.scheduler.timesteps[timestep_id].to(dtype=self.torch_dtype, device=self.device)
@@ -701,11 +703,15 @@ class WanVideoPipeline(BasePipeline):
         # Combine losses
         total_loss = flow_loss + club_loss
         
-        return {
-            'total_loss': total_loss,
-            'flow_loss': flow_loss,
-            'club_loss': club_loss
-        }
+        if return_detailed_losses:
+            return {
+                'total_loss': total_loss,
+                'flow_loss': flow_loss,
+                'club_loss': club_loss
+            }
+        else:
+            # Return scalar loss for training framework compatibility
+            return total_loss
 
     def configure_club_loss(self, lambda_weight=1.0, update_freq=1, training_steps=5, club_lr=1e-3, enable=True):
         """
@@ -2645,8 +2651,8 @@ def example_club_loss_training():
     for step in range(10):  # Demo with 10 steps
         main_optimizer.zero_grad()
         
-        # Compute training loss with CLUB
-        loss_dict = pipe.training_loss(training_step=step, **training_inputs)
+        # Compute training loss with CLUB (get detailed breakdown for monitoring)
+        loss_dict = pipe.training_loss(training_step=step, return_detailed_losses=True, **training_inputs)
         
         total_loss = loss_dict['total_loss']
         flow_loss = loss_dict['flow_loss']

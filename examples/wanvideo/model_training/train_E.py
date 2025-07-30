@@ -67,6 +67,9 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
         self.extra_inputs = extra_inputs.split(",") if extra_inputs is not None else []
+        
+        # Training step counter for CLUB loss
+        self.training_step = 0
 
     def forward_preprocess(self, data):
         # CFG-sensitive parameters
@@ -160,7 +163,13 @@ class WanTrainingModuleE(DiffusionTrainingModule):
     def forward(self, data, inputs=None):
         if inputs is None: inputs = self.forward_preprocess(data)
         models = {name: getattr(self.pipe, name) for name in self.pipe.in_iteration_models}
-        loss = self.pipe.training_loss(**models, **inputs)
+        
+        # Pass current training step to enable CLUB loss scheduling
+        loss = self.pipe.training_loss(training_step=self.training_step, **models, **inputs)
+        
+        # Increment training step counter
+        self.training_step += 1
+        
         return loss
 
 
@@ -179,6 +188,14 @@ if __name__ == "__main__":
     parser.add_argument("--max_object_trajectory_length", type=int, default=512, help="Maximum object trajectory sequence length")
     parser.add_argument("--max_objects", type=int, default=10, help="Maximum number of objects per episode")
     parser.add_argument("--fallback_to_video_only", action="store_true", help="Fall back to video-only training when robot data unavailable")
+    
+    # CLUB loss arguments
+    parser.add_argument("--club_lambda", type=float, default=1.0, help="Weight for CLUB loss in total loss")
+    parser.add_argument("--club_update_freq", type=int, default=1, help="Update CLUB estimator every N training steps")
+    parser.add_argument("--club_training_steps", type=int, default=5, help="Number of CLUB training steps per update")
+    parser.add_argument("--club_lr", type=float, default=1e-3, help="Learning rate for CLUB optimizer")
+    parser.add_argument("--enable_club_loss", action="store_true", default=True, help="Enable CLUB loss for mutual information minimization")
+    parser.add_argument("--disable_club_loss", action="store_true", help="Disable CLUB loss (overrides enable_club_loss)")
     
     args = parser.parse_args()
     
@@ -200,6 +217,24 @@ if __name__ == "__main__":
         enable_vace_e=args.enable_vace_e,
         vace_e_layers=vace_e_layers,
         vace_e_task_processing=args.vace_e_task_processing,
+    )
+    
+    # Configure CLUB loss for mutual information minimization
+    enable_club = args.enable_club_loss and not args.disable_club_loss
+    print(f"\n🎯 CLUB Loss Configuration:")
+    print(f"   Enabled: {enable_club}")
+    if enable_club:
+        print(f"   Lambda weight: {args.club_lambda}")
+        print(f"   Update frequency: {args.club_update_freq}")
+        print(f"   Training steps per update: {args.club_training_steps}")
+        print(f"   Learning rate: {args.club_lr}")
+    
+    model.pipe.configure_club_loss(
+        lambda_weight=args.club_lambda,
+        update_freq=args.club_update_freq,
+        training_steps=args.club_training_steps,
+        club_lr=args.club_lr,
+        enable=enable_club
     )
     model_logger = ModelLogger(
         args.output_path,
