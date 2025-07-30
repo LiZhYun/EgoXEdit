@@ -25,6 +25,8 @@ VACE-E Enhancements:
 - Embodiment Processing: CLIP-encoded end-effector images
 - Multi-modal Fusion: Cross-attention alignment between task and embodiment features
 - Independent Weighted Fusion: Reduced correlation between modalities
+- CLUB Loss Integration: Mutual information minimization for disentangled representations
+- Two-Phase CLUB Training: Automatic q_θ(embodiment|task) approximation and MI minimization
 - Backward Compatibility: Automatic conversion from legacy 10D single-hand format
 - DiT Integration: Seamless integration with existing diffusion transformer architecture
 """
@@ -56,6 +58,55 @@ from ..schedulers.flow_match import FlowMatchScheduler
 from ..prompters import WanPrompter
 from ..vram_management import enable_vram_management, AutoWrappedModule, AutoWrappedLinear, WanAutoCastLayerNorm
 from ..lora import GeneralLoRALoader
+
+
+# CLUB implementation for mutual information minimization
+class CLUB(torch.nn.Module):
+    """
+    CLUB: Contrastive Log-ratio Upper Bound of Mutual Information
+    
+    This class provides the CLUB estimation to I(X,Y) for minimizing mutual information
+    between task features and embodiment features in VACE-E training.
+    
+    Based on the original CLUB paper implementation for disentangled representation learning.
+    """
+    def __init__(self, x_dim, y_dim, hidden_size):
+        super(CLUB, self).__init__()
+        # p_mu outputs mean of q(Y|X)
+        self.p_mu = torch.nn.Sequential(torch.nn.Linear(x_dim, hidden_size//2),
+                                       torch.nn.ReLU(),
+                                       torch.nn.Linear(hidden_size//2, y_dim))
+        # p_logvar outputs log of variance of q(Y|X)
+        self.p_logvar = torch.nn.Sequential(torch.nn.Linear(x_dim, hidden_size//2),
+                                       torch.nn.ReLU(),
+                                       torch.nn.Linear(hidden_size//2, y_dim),
+                                       torch.nn.Tanh())
+
+    def get_mu_logvar(self, x_samples):
+        mu = self.p_mu(x_samples)
+        logvar = self.p_logvar(x_samples)
+        return mu, logvar
+    
+    def forward(self, x_samples, y_samples): 
+        mu, logvar = self.get_mu_logvar(x_samples)
+        
+        # log of conditional probability of positive sample pairs
+        positive = - (mu - y_samples)**2 /2./logvar.exp()  
+        
+        prediction_1 = mu.unsqueeze(1)          # shape [nsample,1,dim]
+        y_samples_1 = y_samples.unsqueeze(0)    # shape [1,nsample,dim]
+
+        # log of conditional probability of negative sample pairs
+        negative = - ((y_samples_1 - prediction_1)**2).mean(dim=1)/2./logvar.exp() 
+
+        return (positive.sum(dim = -1) - negative.sum(dim = -1)).mean()
+
+    def loglikeli(self, x_samples, y_samples): # unnormalized loglikelihood 
+        mu, logvar = self.get_mu_logvar(x_samples)
+        return (-(mu - y_samples)**2 /logvar.exp()-logvar).sum(dim=1).mean(dim=0)
+    
+    def learning_loss(self, x_samples, y_samples):
+        return - self.loglikeli(x_samples, y_samples)
 
 
 class BasePipeline(torch.nn.Module):
@@ -480,6 +531,15 @@ class WanVideoPipeline(BasePipeline):
         # Core model function for diffusion process
         self.model_fn = model_fn_wan_video
         
+        # CLUB estimator for mutual information minimization between task and embodiment features
+        # Initialized with default dimensions, will be properly configured when models are loaded
+        self.club_estimator = None
+        self.club_optimizer = None  # Separate optimizer for CLUB estimator
+        self.club_lambda = 1.0  # Weight for CLUB loss
+        self.club_update_freq = 1  # Update CLUB estimator every N training steps
+        self.club_training_steps = 5  # Number of CLUB training steps per main training step
+        self.enable_club_loss = True  # Whether CLUB loss is enabled
+        
     
     def load_lora(self, module, path, alpha=1):
         """
@@ -499,21 +559,26 @@ class WanVideoPipeline(BasePipeline):
         loader.load(module, lora, alpha=alpha)
 
         
-    def training_loss(self, **inputs):
+    def training_loss(self, training_step=0, **inputs):
         """
-        Compute training loss for model fine-tuning.
+        Compute training loss for model fine-tuning with CLUB-based mutual information minimization.
         
-        Implements the flow matching training objective:
+        Implements the flow matching training objective with disentangled representation learning:
         1. Sample random timestep
         2. Add noise to clean data  
-        3. Predict the noise/flow direction
+        3. Predict the noise/flow direction with task and embodiment features
         4. Compute MSE loss with proper weighting
+        5. Add CLUB loss to minimize mutual information between task and embodiment features
         
         Args:
-            **inputs: Training inputs including latents, noise, prompts, etc.
+            training_step: Current training step (for CLUB estimator updates)
+            **inputs: Training inputs including latents, noise, prompts, VACE-E features, etc.
             
         Returns:
-            Weighted MSE loss for backpropagation
+            Dict containing:
+                - 'total_loss': Combined loss for backpropagation
+                - 'flow_loss': Flow matching loss component  
+                - 'club_loss': CLUB mutual information loss component
         """
         timestep_id = torch.randint(0, self.scheduler.num_train_timesteps, (1,))
         timestep = self.scheduler.timesteps[timestep_id].to(dtype=self.torch_dtype, device=self.device)
@@ -521,11 +586,170 @@ class WanVideoPipeline(BasePipeline):
         inputs["latents"] = self.scheduler.add_noise(inputs["input_latents"], inputs["noise"], timestep)
         training_target = self.scheduler.training_target(inputs["input_latents"], inputs["noise"], timestep)
         
+        # Initialize return_intermediate_features flag for VACE-E
+        # Check if VACE-E is enabled and we have the necessary features
+        has_vace_e_features = (
+            inputs.get("vace_e_context") is not None and 
+            self.vace_e is not None and
+            (inputs["vace_e_context"].get("text_features") is not None or
+             inputs["vace_e_context"].get("hand_motion_sequence") is not None or
+             inputs["vace_e_context"].get("object_trajectory_sequence") is not None or
+             inputs["vace_e_context"].get("embodiment_image_features") is not None)
+        )
+        
+        # Temporarily modify VACE-E context to request intermediate features if available
+        original_vace_e_context = None
+        if has_vace_e_features:
+            original_vace_e_context = inputs["vace_e_context"].copy()
+            inputs["vace_e_context"]["return_intermediate_features"] = True
+        
+        # Get model prediction (potentially with intermediate features)
         noise_pred = self.model_fn(**inputs, timestep=timestep)
         
-        loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
-        loss = loss * self.scheduler.training_weight(timestep)
-        return loss
+        # Restore original context
+        if has_vace_e_features:
+            inputs["vace_e_context"] = original_vace_e_context
+        
+        # Compute flow matching loss
+        flow_loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
+        flow_loss = flow_loss * self.scheduler.training_weight(timestep)
+        
+        # Initialize CLUB loss
+        club_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype)
+        
+        # Compute CLUB loss if VACE-E features are available and CLUB loss is enabled
+        if (self.enable_club_loss and 
+            has_vace_e_features and 
+            '_current_task_features' in globals() and 
+            '_current_embodiment_features' in globals()):
+            
+            task_features = globals()['_current_task_features']
+            embodiment_features = globals()['_current_embodiment_features']
+            
+            if task_features is not None and embodiment_features is not None:
+                # Initialize CLUB estimator if not already done
+                if self.club_estimator is None:
+                    # Flatten features to get dimensions
+                    task_dim = task_features.view(task_features.size(0), -1).size(1)
+                    embodiment_dim = embodiment_features.view(embodiment_features.size(0), -1).size(1)
+                    hidden_size = max(512, min(task_dim, embodiment_dim) * 2)  # Adaptive hidden size
+                    
+                    self.club_estimator = CLUB(task_dim, embodiment_dim, hidden_size).to(self.device)
+                    # Initialize CLUB optimizer
+                    self.club_optimizer = torch.optim.Adam(self.club_estimator.parameters(), lr=getattr(self, 'club_lr', 1e-3))
+                    print(f"🎯 Initialized CLUB estimator: task_dim={task_dim}, embodiment_dim={embodiment_dim}, hidden_size={hidden_size}")
+                
+                # Flatten features for CLUB computation
+                task_flat = task_features.view(task_features.size(0), -1)
+                embodiment_flat = embodiment_features.view(embodiment_features.size(0), -1)
+                
+                # Phase 1: Train CLUB estimator to approximate q_θ(embodiment|task)
+                if training_step % self.club_update_freq == 0:
+                    club_training_loss = self.train_club_estimator(task_flat, embodiment_flat)
+                    # Note: CLUB training loss is for monitoring only, not included in main loss
+                
+                # Phase 2: Compute MI upper bound using trained CLUB estimator
+                with torch.no_grad():
+                    self.club_estimator.eval()
+                    mi_upper_bound = self.club_estimator(task_flat, embodiment_flat)
+                    self.club_estimator.train()
+                
+                # Add MI upper bound to loss (we want to minimize this)
+                club_loss += self.club_lambda * mi_upper_bound
+                
+                # Clean up global variables
+                if '_current_task_features' in globals():
+                    del globals()['_current_task_features']
+                if '_current_embodiment_features' in globals():
+                    del globals()['_current_embodiment_features']
+        
+        # Combine losses
+        total_loss = flow_loss + club_loss
+        
+        return {
+            'total_loss': total_loss,
+            'flow_loss': flow_loss,
+            'club_loss': club_loss
+        }
+
+    def configure_club_loss(self, lambda_weight=1.0, update_freq=1, training_steps=5, club_lr=1e-3, enable=True):
+        """
+        Configure CLUB loss parameters for mutual information minimization.
+        
+        Args:
+            lambda_weight: Weight for CLUB loss in total loss (default: 1.0)
+            update_freq: Update CLUB estimator every N training steps (default: 1)
+            training_steps: Number of CLUB training steps per update (default: 5)
+            club_lr: Learning rate for CLUB optimizer (default: 1e-3)
+            enable: Whether to enable CLUB loss computation (default: True)
+        """
+        self.club_lambda = lambda_weight
+        self.club_update_freq = update_freq
+        self.club_training_steps = training_steps
+        self.club_lr = club_lr
+        self.enable_club_loss = enable
+        
+        print(f"🎯 CLUB loss configured: lambda={lambda_weight}, update_freq={update_freq}, training_steps={training_steps}, lr={club_lr}, enabled={enable}")
+    
+    def train_club_estimator(self, task_features, embodiment_features):
+        """
+        Train the CLUB estimator to approximate q_θ(embodiment|task).
+        
+        This method trains the CLUB estimator using the learning_loss to maximize
+        the log-likelihood of the conditional distribution approximation.
+        
+        Args:
+            task_features: Task feature tensor [batch, task_dim]
+            embodiment_features: Embodiment feature tensor [batch, embodiment_dim]
+        
+        Returns:
+            Average training loss over all training steps
+        """
+        if self.club_estimator is None:
+            return 0.0
+        
+        self.club_estimator.train()
+        total_loss = 0.0
+        
+        for step in range(self.club_training_steps):
+            # Train CLUB estimator to approximate q_θ(embodiment|task)
+            club_loss = self.club_estimator.learning_loss(task_features, embodiment_features)
+            
+            # Update CLUB estimator parameters
+            self.club_optimizer.zero_grad()
+            club_loss.backward(retain_graph=True)  # Retain graph for potential multiple uses
+            self.club_optimizer.step()
+            
+            total_loss += club_loss.item()
+        
+        self.club_estimator.eval()
+        return total_loss / self.club_training_steps
+    
+    def get_club_estimator_info(self):
+        """
+        Get information about the current CLUB estimator.
+        
+        Returns:
+            Dict with CLUB estimator information
+        """
+        if self.club_estimator is None:
+            return {"initialized": False}
+        
+        # Get parameter count
+        total_params = sum(p.numel() for p in self.club_estimator.parameters())
+        trainable_params = sum(p.numel() for p in self.club_estimator.parameters() if p.requires_grad)
+        
+        return {
+            "initialized": True,
+            "lambda_weight": self.club_lambda,
+            "update_freq": self.club_update_freq,
+            "training_steps": self.club_training_steps,
+            "club_lr": getattr(self, 'club_lr', 'not_set'),
+            "total_parameters": total_params,
+            "trainable_parameters": trainable_params,
+            "device": next(self.club_estimator.parameters()).device,
+            "optimizer_initialized": self.club_optimizer is not None,
+        }
 
 
     def enable_vram_management(self, num_persistent_param_in_dit=None, vram_limit=None, vram_buffer=0.5):
@@ -2029,8 +2253,11 @@ def model_fn_wan_video(
             else:
                 vace_e_context_device[key] = value
         
+        # Check if we need to return intermediate features for CLUB loss
+        return_intermediate_features = vace_e_context_device.get("return_intermediate_features", False)
+        
         # Extract task and embodiment features from VACE-E context
-        vace_e_hints = vace_e(
+        vace_e_result = vace_e(
             x, None, context, t_mod, freqs,  # x, vace_context (None for VACE-E), context, t_mod, freqs
             # Task features
             text_features=vace_e_context_device.get("text_features"),
@@ -2044,7 +2271,19 @@ def model_fn_wan_video(
             embodiment_image_features=vace_e_context_device.get("embodiment_image_features"),
             use_gradient_checkpointing=use_gradient_checkpointing,
             use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+            # CLUB training support
+            return_intermediate_features=return_intermediate_features,
         )
+        
+        # Handle different return formats
+        if return_intermediate_features:
+            vace_e_hints, task_features, embodiment_features = vace_e_result
+            # Store features for CLUB loss computation
+            # We store these as global variables that can be accessed by the training_loss function
+            globals()['_current_task_features'] = task_features
+            globals()['_current_embodiment_features'] = embodiment_features
+        else:
+            vace_e_hints = vace_e_result
     
     # Process through transformer blocks
     if use_unified_sequence_parallel:
@@ -2295,6 +2534,125 @@ def example_vace_e_usage():
     return True
 
 
+def example_club_loss_training():
+    """
+    Example of training with CLUB loss for mutual information minimization.
+    
+    This example demonstrates how to train the VACE-E model with disentangled
+    representation learning using CLUB (Contrastive Log-ratio Upper Bound) to
+    minimize mutual information between task and embodiment features.
+    
+    CLUB Training Process (following the official implementation):
+    1. Phase 1: Train CLUB estimator using learning_loss() to approximate q_θ(embodiment|task)
+    2. Phase 2: Use trained estimator with forward() to compute MI upper bound
+    3. Minimize the MI upper bound in the main training loss
+    
+    Based on the vCLUB algorithm for learning disentangled representations.
+    """
+    import torch
+    import torch.optim as optim
+    
+    print("=== CLUB Loss Training Example ===")
+    print("\nTraining VACE-E with disentangled task-embodiment representations:")
+    
+    # Initialize pipeline with VACE-E
+    pipe = WanVideoPipeline.from_pretrained(
+        device="cuda",
+        torch_dtype=torch.bfloat16,
+        enable_vace_e=True,
+        vace_e_layers=(0, 5, 10, 15, 20, 25),
+        vace_e_task_processing=True,
+    )
+    
+    # Configure CLUB loss parameters
+    print("\n1. Configuring CLUB loss parameters:")
+    pipe.configure_club_loss(
+        lambda_weight=1.0,  # Weight for CLUB loss in total loss
+        update_freq=1,      # Update CLUB estimator every step
+        training_steps=5,   # Number of CLUB training steps per update
+        club_lr=1e-3,       # Learning rate for CLUB optimizer
+        enable=True         # Enable CLUB loss computation
+    )
+    
+    # Create training data with task and embodiment features
+    print("\n2. Preparing training data with VACE-E features:")
+    batch_size = 2
+    seq_len = 81
+    
+    training_inputs = {
+        "input_latents": torch.randn(batch_size, 16, 21, 30, 52, device="cuda"),
+        "noise": torch.randn(batch_size, 16, 21, 30, 52, device="cuda"),
+        "context": torch.randn(batch_size, 77, 4096, device="cuda"),
+        "vace_e_context": {
+            # Task features (what to do)
+            "text_features": torch.randn(batch_size, 77, 4096, device="cuda"),
+            "hand_motion_sequence": torch.randn(batch_size, seq_len, 20, device="cuda"),
+            "object_trajectory_sequence": torch.randn(batch_size, seq_len, 2, 9, device="cuda"),
+            "object_ids": torch.tensor([[1, 2], [1, 2]], device="cuda"),
+            "text_mask": torch.ones(batch_size, 77, device="cuda"),
+            "motion_mask": torch.ones(batch_size, seq_len, device="cuda"),
+            "trajectory_mask": torch.ones(batch_size, seq_len, 2, device="cuda"),
+            # Embodiment features (how to do it)
+            "embodiment_image_features": torch.randn(batch_size, 257, 1280, device="cuda"),
+        }
+    }
+    
+    # Setup optimizers
+    print("\n3. Setting up optimizers:")
+    main_optimizer = optim.AdamW(pipe.dit.parameters(), lr=1e-4)
+    # CLUB optimizer will be automatically initialized when CLUB estimator is created
+    
+    # Training loop
+    print("\n4. Training with CLUB loss:")
+    print("Format: Step | Total Loss | Flow Loss | CLUB Loss | MI Upper Bound")
+    print("-" * 70)
+    
+    for step in range(10):  # Demo with 10 steps
+        main_optimizer.zero_grad()
+        
+        # Compute training loss with CLUB
+        loss_dict = pipe.training_loss(training_step=step, **training_inputs)
+        
+        total_loss = loss_dict['total_loss']
+        flow_loss = loss_dict['flow_loss']
+        club_loss = loss_dict['club_loss']
+        
+        # Check if CLUB estimator was initialized
+        if pipe.club_estimator is not None and step == 0:
+            print(f"   🎯 CLUB estimator and optimizer automatically initialized")
+        
+        # Backward pass and optimization (CLUB training is handled automatically)
+        total_loss.backward()
+        main_optimizer.step()
+        
+        # Print progress
+        mi_bound = club_loss.item() / pipe.club_lambda if pipe.club_lambda > 0 else 0
+        print(f"   {step:2d}   | {total_loss:.4f}   | {flow_loss:.4f}   | {club_loss:.4f}   | {mi_bound:.4f}")
+    
+    # Display CLUB estimator information
+    print("\n5. CLUB Estimator Final Information:")
+    club_info = pipe.get_club_estimator_info()
+    for key, value in club_info.items():
+        print(f"   {key}: {value}")
+    
+    print("\n6. Key Benefits of CLUB Loss Training:")
+    print("   • Two-Phase Training: First train q_θ(embodiment|task), then minimize MI upper bound")
+    print("   • Disentangled Representations: Task and embodiment features become less correlated")
+    print("   • Better Generalization: Model learns to separate 'what to do' from 'how to do it'")
+    print("   • Controllable Generation: Independent control over task and embodiment aspects")
+    print("   • Principled Approach: Based on mutual information theory with theoretical guarantees")
+    print("   • Automatic Training: CLUB estimator is trained automatically during main training")
+    
+    print("\n✅ CLUB loss training example completed successfully!")
+    return pipe
+
+
 if __name__ == "__main__":
-    # Run example when script is executed directly
+    # Run examples when script is executed directly
+    print("Running VACE-E usage example...")
     example_vace_e_usage()
+    
+    print("\n" + "="*80 + "\n")
+    
+    print("Running CLUB loss training example...")
+    example_club_loss_training()

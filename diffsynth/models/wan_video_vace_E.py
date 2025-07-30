@@ -914,6 +914,8 @@ class VaceWanModel(torch.nn.Module):
         embodiment_image_features=None,  # CLIP-encoded end-effector image [batch, 257, 1280]
         use_gradient_checkpointing: bool = False,
         use_gradient_checkpointing_offload: bool = False,
+        # CLUB training support
+        return_intermediate_features: bool = False,  # Whether to return task and embodiment features for CLUB loss
     ):
         """
         Enhanced VACE forward pass with task-embodiment fusion.
@@ -1160,7 +1162,12 @@ class VaceWanModel(torch.nn.Module):
         # Remove the final context tensor, keeping only the skip connections
         # These hints will be added to main model features at corresponding layers
         hints = torch.unbind(c)[:-1]  # All but the last tensor are hints
-        return hints
+        
+        # Optionally return intermediate features for CLUB loss computation
+        if return_intermediate_features:
+            return hints, task_features, embodiment_features
+        else:
+            return hints
     
     @staticmethod
     def state_dict_converter():
