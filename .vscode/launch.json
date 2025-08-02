@@ -14,18 +14,14 @@
             "args": [
                 "--model_id_with_origin_paths",
                 "Wan-AI/Wan2.1-VACE-1.3B:diffusion_pytorch_model*.safetensors,Wan-AI/Wan2.1-VACE-1.3B:models_t5_umt5-xxl-enc-bf16.pth,Wan-AI/Wan2.1-VACE-1.3B:Wan2.1_VAE.pth,Wan-AI/Wan2.1-I2V-14B-480P:models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
-                "--lora_base_model",
-                "dit",
-                "--lora_rank",
-                "64",
                 "--enable_vace_e",
                 "--vace_e_layers",
-                "0,5,10,15,20,25",
+                "0",
                 "--vace_e_task_processing",
                 "--task_metadata_path",
-                "/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json",
+                "/home/zhiyuan/Code/h2rego_data_preprocess/data/ph2d_metadata.json",
                 "--dataset_base_path",
-                "/home/zhiyuan/Codes/DataSets/small_test",
+                "/home/zhiyuan/Code/small_dataset/",
                 "--output_path",
                 "./output/vace_e_lora",
                 "--learning_rate",
@@ -35,7 +31,9 @@
                 "--gradient_accumulation_steps",
                 "4",
                 "--trainable_models",
-                "vace_e"
+                "vace_e",
+                "--remove_prefix_in_ckpt",
+                "pipe.vace_e.,"
             ]
         }
     ]

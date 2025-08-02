@@ -22,6 +22,8 @@ Requires-Dist: protobuf
 Requires-Dist: modelscope
 Requires-Dist: ftfy
 Requires-Dist: pynvml
+Requires-Dist: pandas
+Requires-Dist: accelerate
 Dynamic: author
 Dynamic: classifier
 Dynamic: license-file

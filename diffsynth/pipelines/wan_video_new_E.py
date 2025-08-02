@@ -559,7 +559,7 @@ class WanVideoPipeline(BasePipeline):
         loader.load(module, lora, alpha=alpha)
 
         
-    def training_loss(self, training_step=0, return_detailed_losses=False, **inputs):
+    def training_loss(self, training_step=0, **inputs):
         """
         Compute training loss for model fine-tuning with CLUB-based mutual information minimization.
         
@@ -702,16 +702,14 @@ class WanVideoPipeline(BasePipeline):
         
         # Combine losses
         total_loss = flow_loss + club_loss
-        
-        if return_detailed_losses:
-            return {
+
+        log_loss = {
                 'total_loss': total_loss,
                 'flow_loss': flow_loss,
                 'club_loss': club_loss
             }
-        else:
-            # Return scalar loss for training framework compatibility
-            return total_loss
+        
+        return total_loss, log_loss
 
     def configure_club_loss(self, lambda_weight=1.0, update_freq=1, training_steps=5, club_lr=1e-3, enable=True):
         """

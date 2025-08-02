@@ -4,6 +4,12 @@ from PIL import Image
 import pandas as pd
 from tqdm import tqdm
 from accelerate import Accelerator
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+    warnings.warn("wandb is not installed. Logging to wandb will be disabled.")
 
 
 
@@ -357,14 +363,43 @@ class DiffusionTrainingModule(torch.nn.Module):
 
 
 class ModelLogger:
-    def __init__(self, output_path, remove_prefix_in_ckpt=None, state_dict_converter=lambda x:x):
+    def __init__(self, output_path, remove_prefix_in_ckpt=None, state_dict_converter=lambda x:x, 
+                 use_wandb=False, wandb_project=None, wandb_config=None):
         self.output_path = output_path
         self.remove_prefix_in_ckpt = remove_prefix_in_ckpt
         self.state_dict_converter = state_dict_converter
+        self.use_wandb = use_wandb and HAS_WANDB
+        self.step_count = 0
+        
+        if self.use_wandb:
+            wandb.init(
+                entity="zhiyuanli",
+                project=wandb_project or "diffsynth-training",
+                config=wandb_config
+            )
+        elif use_wandb and not HAS_WANDB:
+            warnings.warn("wandb was requested but is not available. Install wandb to enable logging.")
         
     
-    def on_step_end(self, loss):
-        pass
+    def on_step_end(self, log_loss):
+        # log_loss = {
+        #         'total_loss': total_loss,
+        #         'flow_loss': flow_loss,
+        #         'club_loss': club_loss
+        #     }
+        self.step_count += 1
+        
+        if self.use_wandb and log_loss:
+            # Log all loss components to wandb
+            wandb_log_dict = {}
+            for key, value in log_loss.items():
+                if torch.is_tensor(value):
+                    wandb_log_dict[f"train/{key}"] = value.item()
+                else:
+                    wandb_log_dict[f"train/{key}"] = value
+            
+            wandb_log_dict["train/step"] = self.step_count
+            wandb.log(wandb_log_dict, step=self.step_count)
     
     
     def on_epoch_end(self, accelerator, model, epoch_id):
@@ -376,6 +411,28 @@ class ModelLogger:
             os.makedirs(self.output_path, exist_ok=True)
             path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
             accelerator.save(state_dict, path, safe_serialization=True)
+            
+            if self.use_wandb:
+                # Log epoch completion
+                wandb.log({
+                    "train/epoch": epoch_id,
+                    "train/checkpoint_saved": True
+                }, step=self.step_count)
+                
+                # Optionally save model as wandb artifact
+                artifact = wandb.Artifact(
+                    name=f"model-epoch-{epoch_id}",
+                    type="model",
+                    description=f"Model checkpoint at epoch {epoch_id}"
+                )
+                artifact.add_file(path)
+                wandb.log_artifact(artifact)
+    
+    
+    def finish(self):
+        """Clean up wandb run if active."""
+        if self.use_wandb:
+            wandb.finish()
 
 
 
@@ -396,10 +453,10 @@ def launch_training_task(
         for data in tqdm(dataloader):
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
-                loss = model(data)
+                loss, log_loss = model(data)
                 accelerator.backward(loss)
                 optimizer.step()
-                model_logger.on_step_end(loss)
+                model_logger.on_step_end(log_loss)
                 scheduler.step()
         model_logger.on_epoch_end(accelerator, model, epoch_id)
 
@@ -441,6 +498,8 @@ def wan_parser():
     parser.add_argument("--extra_inputs", default=None, help="Additional model inputs, comma-separated.")
     parser.add_argument("--use_gradient_checkpointing_offload", default=False, action="store_true", help="Whether to offload gradient checkpointing to CPU memory.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps.")
+    parser.add_argument("--use_wandb", default=True, action="store_true", help="Whether to use wandb for logging.")
+    parser.add_argument("--wandb_project", type=str, default="wanvideo-training", help="Wandb project name.")
     return parser
 
 
@@ -469,4 +528,7 @@ def flux_parser():
     parser.add_argument("--use_gradient_checkpointing", default=False, action="store_true", help="Whether to use gradient checkpointing.")
     parser.add_argument("--use_gradient_checkpointing_offload", default=False, action="store_true", help="Whether to offload gradient checkpointing to CPU memory.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps.")
+    parser.add_argument("--use_wandb", default=False, action="store_true", help="Whether to use wandb for logging.")
+    parser.add_argument("--wandb_project", type=str, default=None, help="Wandb project name.")
+    parser.add_argument("--wandb_name", type=str, default=None, help="Wandb run name.")
     return parser

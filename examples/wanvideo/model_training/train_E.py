@@ -165,12 +165,12 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         models = {name: getattr(self.pipe, name) for name in self.pipe.in_iteration_models}
         
         # Pass current training step to enable CLUB loss scheduling
-        loss = self.pipe.training_loss(training_step=self.training_step, **models, **inputs)
+        loss, log_loss = self.pipe.training_loss(training_step=self.training_step, **models, **inputs)
         
         # Increment training step counter
         self.training_step += 1
         
-        return loss
+        return loss, log_loss
 
 
 if __name__ == "__main__":
@@ -238,7 +238,10 @@ if __name__ == "__main__":
     )
     model_logger = ModelLogger(
         args.output_path,
-        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt
+        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
+        use_wandb=args.use_wandb,
+        wandb_project=args.wandb_project,
+        wandb_config=args
     )
     optimizer = torch.optim.AdamW(model.trainable_modules(), lr=args.learning_rate)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)

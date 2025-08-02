@@ -68,7 +68,7 @@ import shutil
 import glob
 
 
-def load_task_metadata(metadata_path="/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json"):
+def load_task_metadata(metadata_path="/home/zhiyuan/Code/h2rego_data_preprocess/data/ph2d_metadata.json"):
     """
     Load task metadata from JSON file.
     
@@ -142,7 +142,7 @@ def generate_task_prompt(task_name, metadata):
     return prompt
 
 
-def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Codes/DataSets/small_test"):
+def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Code/small_dataset/"):
     """
     Load robot demonstration data from HDF5 files for VACE-E processing.
     
@@ -443,7 +443,7 @@ pipe = WanVideoPipeline.from_pretrained(
     ],
     # VACE-E configuration
     enable_vace_e=True,
-    vace_e_layers=(0, 5, 10, 15, 20, 25),
+    vace_e_layers=(0,),
     vace_e_task_processing=True,
 )
 
@@ -451,11 +451,11 @@ pipe.enable_vram_management()
 
 # Load robot demonstration data for VACE-E
 print("\n=== Loading Robot Demonstration Data for VACE-E ===")
-robot_episodes = load_robot_data_from_hdf5("/home/zhiyuan/Codes/DataSets/small_test")
+robot_episodes = load_robot_data_from_hdf5("/home/zhiyuan/Code/small_dataset/")
 
 # Load task metadata for prompt generation
 print("\n=== Loading Task Metadata ===")
-task_metadata = load_task_metadata("/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json")
+task_metadata = load_task_metadata("/home/zhiyuan/Code/h2rego_data_preprocess/data/ph2d_metadata.json")
 
 if not robot_episodes:
     print("⚠️ No robot episodes loaded, continuing with standard VACE generation...")
@@ -574,8 +574,8 @@ for episode_idx, episode_data in enumerate(robot_episodes):
                 mask_frame.save(os.path.join(mask_temp_folder, f"{i:04d}.png"))
             
             # Create new VideoData objects from sampled frames
-            vace_video = VideoData(image_folder=vace_temp_folder, height=480, width=832)
-            vace_video_mask = VideoData(image_folder=mask_temp_folder, height=480, width=832)
+            vace_video = VideoData(image_folder=vace_temp_folder, height=240, width=416)
+            vace_video_mask = VideoData(image_folder=mask_temp_folder, height=240, width=416)
             
             print(f"✓ Reduced to {len(vace_video)} frames")
             
@@ -602,7 +602,7 @@ for episode_idx, episode_data in enumerate(robot_episodes):
         # Standard VACE parameters
         vace_video=vace_video,
         vace_video_mask=vace_video_mask,
-        vace_reference_image=Image.open(episode_data['end_effector_image_path']).resize((832, 480)),
+        vace_reference_image=Image.open(episode_data['end_effector_image_path']).resize((416, 240)),
         vace_scale=1.0,
         
         # VACE-E Enhanced parameters (task-embodiment fusion)
@@ -619,8 +619,8 @@ for episode_idx, episode_data in enumerate(robot_episodes):
         # Generation parameters
         seed=1, 
         tiled=True,
-        height=480,
-        width=832,
+        height=240,
+        width=416,
         num_frames=len(vace_video)  # Use the reduced frame count (81 or less)
     )
     
