@@ -1,0 +1,169 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            0qialf1mdhnkb4z340xpe1vsj7044p40:
+                args:
+                    - --model_id_with_origin_paths
+                    - Wan-AI/Wan2.1-VACE-1.3B:diffusion_pytorch_model*.safetensors,Wan-AI/Wan2.1-VACE-1.3B:models_t5_umt5-xxl-enc-bf16.pth,Wan-AI/Wan2.1-VACE-1.3B:Wan2.1_VAE.pth,Wan-AI/Wan2.1-I2V-14B-480P:models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+                    - --enable_vace_e
+                    - --vace_e_layers
+                    - "0"
+                    - --vace_e_task_processing
+                    - --task_metadata_path
+                    - /home/zhiyuan/Code/h2rego_data_preprocess/data/ph2d_metadata.json
+                    - --dataset_base_path
+                    - /home/zhiyuan/Code/small_dataset/
+                    - --output_path
+                    - ./output/vace_e_lora
+                    - --learning_rate
+                    - "1e-4"
+                    - --num_epochs
+                    - "50"
+                    - --gradient_accumulation_steps
+                    - "4"
+                    - --trainable_models
+                    - vace_e
+                    - --remove_prefix_in_ckpt
+                    - pipe.vace_e.,
+                    - --height
+                    - "240"
+                    - --width
+                    - "416"
+                    - --batch_size
+                    - "4"
+                codePath: examples/wanvideo/model_training/train_E.py
+                codePathLocal: examples/wanvideo/model_training/train_E.py
+                cpu_count: 16
+                cpu_count_logical: 32
+                cudaVersion: "12.9"
+                disk:
+                    /:
+                        total: "982240026624"
+                        used: "30481895424"
+                email: zhiyuan.li@aalto.fi
+                executable: /home/zhiyuan/miniconda3/envs/diffstudio/bin/python
+                git:
+                    commit: 53598db12808d51f347b95acc59c1f77c1acbaf9
+                    remote: git@github.com:LiZhYun/h2rego_video_generation.git
+                gpu: NVIDIA GeForce RTX 3090
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-f1774e84-b0c5-8e45-7a91-87e54f4ecdef
+                host: zhiyuan-GUNDAM
+                memory:
+                    total: "67327373312"
+                os: Linux-6.14.0-27-generic-x86_64-with-glibc2.39
+                program: /home/zhiyuan/Code/h2rego_video_generation/examples/wanvideo/model_training/train_E.py
+                python: CPython 3.10.18
+                root: /home/zhiyuan/Code/h2rego_video_generation
+                startedAt: "2025-08-02T16:40:40.568137Z"
+                writerId: 0qialf1mdhnkb4z340xpe1vsj7044p40
+        m: []
+        python_version: 3.10.18
+        t:
+            "1":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 71
+                - 98
+            "2":
+                - 1
+                - 11
+                - 41
+                - 49
+                - 71
+                - 98
+            "3":
+                - 16
+            "4": 3.10.18
+            "5": 0.21.0
+            "6": 4.54.1
+            "12": 0.21.0
+            "13": linux-x86_64
+batch_size:
+    value: 4
+club_lambda:
+    value: 1
+club_lr:
+    value: 0.001
+club_training_steps:
+    value: 5
+club_update_freq:
+    value: 1
+data_file_keys:
+    value: image,video
+dataset_base_path:
+    value: /home/zhiyuan/Code/small_dataset/
+dataset_metadata_path:
+    value: null
+dataset_repeat:
+    value: 1
+disable_club_loss:
+    value: false
+enable_club_loss:
+    value: true
+enable_vace_e:
+    value: true
+extra_inputs:
+    value: null
+fallback_to_video_only:
+    value: false
+gradient_accumulation_steps:
+    value: 4
+height:
+    value: 240
+learning_rate:
+    value: 0.0001
+lora_base_model:
+    value: null
+lora_rank:
+    value: 32
+lora_target_modules:
+    value: q,k,v,o,ffn.0,ffn.2
+max_hand_motion_length:
+    value: 512
+max_object_trajectory_length:
+    value: 512
+max_objects:
+    value: 10
+max_pixels:
+    value: 921600
+model_id_with_origin_paths:
+    value: Wan-AI/Wan2.1-VACE-1.3B:diffusion_pytorch_model*.safetensors,Wan-AI/Wan2.1-VACE-1.3B:models_t5_umt5-xxl-enc-bf16.pth,Wan-AI/Wan2.1-VACE-1.3B:Wan2.1_VAE.pth,Wan-AI/Wan2.1-I2V-14B-480P:models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
+model_paths:
+    value: null
+num_epochs:
+    value: 50
+num_frames:
+    value: 81
+num_workers:
+    value: 0
+output_path:
+    value: ./output/vace_e_lora
+remove_prefix_in_ckpt:
+    value: pipe.vace_e.,
+task_metadata_path:
+    value: /home/zhiyuan/Code/h2rego_data_preprocess/data/ph2d_metadata.json
+trainable_models:
+    value: vace_e
+use_gradient_checkpointing_offload:
+    value: false
+use_video_collate:
+    value: true
+use_wandb:
+    value: true
+vace_e_layers:
+    value: "0"
+vace_e_task_processing:
+    value: true
+wandb_project:
+    value: wanvideo-training
+width:
+    value: 416

@@ -33,7 +33,13 @@
                 "--trainable_models",
                 "vace_e",
                 "--remove_prefix_in_ckpt",
-                "pipe.vace_e.,"
+                "pipe.vace_e.,",
+                "--height",
+                "240",
+                "--width",
+                "416",
+                "--batch_size",
+                "4",
             ]
         }
     ]

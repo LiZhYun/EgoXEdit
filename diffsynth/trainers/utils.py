@@ -1,4 +1,4 @@
-import imageio, os, torch, warnings, torchvision, argparse, json
+import imageio, os, torch, warnings, torchvision, argparse, json, numpy as np
 from peft import LoraConfig, inject_adapter_in_model
 from PIL import Image
 import pandas as pd
@@ -436,6 +436,162 @@ class ModelLogger:
 
 
 
+def video_collate_fn(batch, min_value=-1, max_value=1):
+    """
+    Custom collate function for video datasets that handles batching of:
+    - Videos (lists of PIL Images) -> torch.Tensor [B, T, C, H, W]
+    - Hand motion sequences (tensors) -> torch.Tensor [B, seq_len, feature_dim] (padded)
+    - Object trajectories (tensors) -> torch.Tensor [B, seq_len, num_objects, 9] (padded)
+    - Object IDs (tensors) -> torch.Tensor [B, num_objects] (padded)
+    - Images (PIL Images) -> torch.Tensor [B, C, H, W]
+    - Strings and None values -> lists
+    
+    This collate function is essential for CLUB loss training which requires batch_size > 1
+    to properly estimate mutual information between task and embodiment features.
+    
+    Args:
+        batch: List of dataset items to collate
+        min_value: Minimum value for pixel normalization (default: -1)
+        max_value: Maximum value for pixel normalization (default: 1)
+    
+    Usage:
+        dataloader = DataLoader(dataset, batch_size=4, collate_fn=video_collate_fn)
+        # Or use launch_training_task with use_video_collate=True
+        # With custom normalization:
+        collate_fn = lambda batch: video_collate_fn(batch, min_value=0, max_value=1)
+    """
+    # Filter out None items
+    batch = [item for item in batch if item is not None]
+    
+    if len(batch) == 0:
+        return None
+    
+    # Initialize result dictionary
+    result = {}
+    
+    # Get all keys from the first item
+    keys = batch[0].keys()
+    
+    for key in keys:
+        values = [item[key] for item in batch]
+        
+        if key in ['prompt', 'task_name', 'episode_name']:
+            # String data - keep as list
+            result[key] = values
+        elif key in ['video', 'vace_video', 'vace_video_mask']:
+            # Video data (list of PIL Images) - need to handle None values
+            valid_videos = [v for v in values if v is not None]
+            if len(valid_videos) == 0:
+                result[key] = None
+            else:
+                # Convert PIL Images to tensors and batch
+                # Assuming all videos have same shape after preprocessing
+                video_tensors = []
+                for video in valid_videos:
+                    if isinstance(video, list) and len(video) > 0:
+                        # Convert PIL images to tensors
+                        frames = []
+                        for frame in video:
+                            if frame is not None:
+                                # Follow the exact same pattern as preprocess_image in wan_video_new_E.py
+                                frame_tensor = torch.Tensor(np.array(frame, dtype=np.float32)) if isinstance(frame, Image.Image) else frame
+                                frame_tensor = frame_tensor.to(dtype=torch.float32)
+                                frame_tensor = frame_tensor * ((max_value - min_value) / 255) + min_value
+                                # Convert from H W C to C H W
+                                if len(frame_tensor.shape) == 3:
+                                    frame_tensor = frame_tensor.permute(2, 0, 1)
+                                frames.append(frame_tensor)
+                        if len(frames) > 0:
+                            video_tensor = torch.stack(frames)  # [T, C, H, W]
+                            video_tensors.append(video_tensor)
+                
+                if len(video_tensors) > 0:
+                    # Pad videos to same length if needed
+                    max_frames = max(v.shape[0] for v in video_tensors)
+                    padded_videos = []
+                    for v in video_tensors:
+                        if v.shape[0] < max_frames:
+                            # Pad with last frame
+                            last_frame = v[-1:].expand(max_frames - v.shape[0], -1, -1, -1)
+                            v = torch.cat([v, last_frame], dim=0)
+                        padded_videos.append(v)
+                    result[key] = torch.stack(padded_videos)  # [B, T, C, H, W]
+                else:
+                    result[key] = None
+        elif key in ['embodiment_image', 'vace_reference_image']:
+            # Single image data
+            valid_images = [v for v in values if v is not None]
+            if len(valid_images) == 0:
+                result[key] = None
+            else:
+                image_tensors = []
+                for img in valid_images:
+                    if img is not None:
+                        # Follow the exact same pattern as preprocess_image in wan_video_new_E.py
+                        img_tensor = torch.Tensor(np.array(img, dtype=np.float32)) if isinstance(img, Image.Image) else img
+                        img_tensor = img_tensor.to(dtype=torch.float32)
+                        img_tensor = img_tensor * ((max_value - min_value) / 255) + min_value
+                        # Convert from H W C to C H W
+                        if len(img_tensor.shape) == 3:
+                            img_tensor = img_tensor.permute(2, 0, 1)
+                        image_tensors.append(img_tensor)
+                if len(image_tensors) > 0:
+                    result[key] = torch.stack(image_tensors)  # [B, C, H, W]
+                else:
+                    result[key] = None
+        elif key in ['hand_motion_sequence', 'object_trajectory_sequence', 'object_ids']:
+            # Tensor data that needs padding
+            valid_tensors = [v for v in values if v is not None]
+            if len(valid_tensors) == 0:
+                result[key] = None
+            else:
+                if len(valid_tensors) == 1:
+                    result[key] = valid_tensors[0].unsqueeze(0)  # Add batch dimension
+                else:
+                    # Pad to same length
+                    if key == 'object_trajectory_sequence':
+                        # [seq_len, num_objects, 9] -> need to pad both seq_len and num_objects
+                        max_seq_len = max(t.shape[0] for t in valid_tensors)
+                        max_objects = max(t.shape[1] for t in valid_tensors)
+                        padded_tensors = []
+                        for t in valid_tensors:
+                            # Pad sequence length
+                            if t.shape[0] < max_seq_len:
+                                pad_seq = torch.zeros(max_seq_len - t.shape[0], t.shape[1], t.shape[2])
+                                t = torch.cat([t, pad_seq], dim=0)
+                            # Pad number of objects
+                            if t.shape[1] < max_objects:
+                                pad_obj = torch.zeros(t.shape[0], max_objects - t.shape[1], t.shape[2])
+                                t = torch.cat([t, pad_obj], dim=1)
+                            padded_tensors.append(t)
+                        result[key] = torch.stack(padded_tensors)
+                    elif key == 'object_ids':
+                        # [num_objects] -> pad to same number of objects
+                        max_objects = max(t.shape[0] for t in valid_tensors)
+                        padded_tensors = []
+                        for t in valid_tensors:
+                            if t.shape[0] < max_objects:
+                                pad = torch.zeros(max_objects - t.shape[0], dtype=t.dtype)
+                                t = torch.cat([t, pad], dim=0)
+                            padded_tensors.append(t)
+                        result[key] = torch.stack(padded_tensors)
+                    else:
+                        # hand_motion_sequence: [seq_len, feature_dim]
+                        max_seq_len = max(t.shape[0] for t in valid_tensors)
+                        padded_tensors = []
+                        for t in valid_tensors:
+                            if t.shape[0] < max_seq_len:
+                                pad = torch.zeros(max_seq_len - t.shape[0], t.shape[1])
+                                t = torch.cat([t, pad], dim=0)
+                            padded_tensors.append(t)
+                        result[key] = torch.stack(padded_tensors)
+        else:
+            # Default: keep as list
+            result[key] = values
+    
+    return result
+
+
 def launch_training_task(
     dataset: torch.utils.data.Dataset,
     model: DiffusionTrainingModule,
@@ -444,13 +600,30 @@ def launch_training_task(
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     num_epochs: int = 1,
     gradient_accumulation_steps: int = 1,
+    batch_size: int = 1,
+    num_workers: int = 0,
+    use_video_collate: bool = False,
+    video_min_value: float = -1,
+    video_max_value: float = 1,
 ):
-    dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0])
+    # Choose appropriate collate function
+    collate_fn = (lambda batch: video_collate_fn(batch, min_value=video_min_value, max_value=video_max_value)) if use_video_collate else (lambda x: x[0])
+    
+    dataloader = torch.utils.data.DataLoader(
+        dataset, 
+        shuffle=True, 
+        batch_size=batch_size,
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        drop_last=True  # Drop last incomplete batch for consistent CLUB training
+    )
     accelerator = Accelerator(gradient_accumulation_steps=gradient_accumulation_steps)
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
+            if data is None:  # Skip None batches
+                continue
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
                 loss, log_loss = model(data)
@@ -472,6 +645,28 @@ def launch_data_process_task(model: DiffusionTrainingModule, dataset, output_pat
             inputs = model.forward_preprocess(data)
             inputs = {key: inputs[key] for key in model.model_input_keys if key in inputs}
             torch.save(inputs, os.path.join(output_path, "data_cache", f"{data_id}.pth"))
+
+
+def enable_club_training_defaults(args):
+    """
+    Helper function to set appropriate defaults for CLUB loss training.
+    CLUB loss requires batch_size > 1 to compute mutual information properly.
+    """
+    if hasattr(args, 'enable_club_loss') and args.enable_club_loss:
+        if args.batch_size <= 1:
+            print("⚠️  Warning: CLUB loss requires batch_size > 1 for proper mutual information estimation.")
+            print("   Automatically setting batch_size=4 and use_video_collate=True")
+            args.batch_size = 4
+            args.use_video_collate = True
+        
+        if not args.use_video_collate:
+            print("⚠️  Warning: CLUB loss with video data requires use_video_collate=True for proper batching.")
+            print("   Automatically enabling use_video_collate")
+            args.use_video_collate = True
+            
+        print(f"✅ CLUB training configured: batch_size={args.batch_size}, use_video_collate={args.use_video_collate}")
+    
+    return args
 
 
 
@@ -498,6 +693,11 @@ def wan_parser():
     parser.add_argument("--extra_inputs", default=None, help="Additional model inputs, comma-separated.")
     parser.add_argument("--use_gradient_checkpointing_offload", default=False, action="store_true", help="Whether to offload gradient checkpointing to CPU memory.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps.")
+    parser.add_argument("--batch_size", type=int, default=1, help="Training batch size.")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of dataloader workers.")
+    parser.add_argument("--use_video_collate", default=True, action="store_true", help="Use video collate function for batching.")
+    parser.add_argument("--video_min_value", type=float, default=-1, help="Minimum value for video pixel normalization in collate function.")
+    parser.add_argument("--video_max_value", type=float, default=1, help="Maximum value for video pixel normalization in collate function.")
     parser.add_argument("--use_wandb", default=True, action="store_true", help="Whether to use wandb for logging.")
     parser.add_argument("--wandb_project", type=str, default="wanvideo-training", help="Wandb project name.")
     return parser
@@ -528,6 +728,9 @@ def flux_parser():
     parser.add_argument("--use_gradient_checkpointing", default=False, action="store_true", help="Whether to use gradient checkpointing.")
     parser.add_argument("--use_gradient_checkpointing_offload", default=False, action="store_true", help="Whether to offload gradient checkpointing to CPU memory.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps.")
+    parser.add_argument("--batch_size", type=int, default=1, help="Training batch size.")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of dataloader workers.")
+    parser.add_argument("--use_video_collate", default=False, action="store_true", help="Use video collate function for batching.")
     parser.add_argument("--use_wandb", default=False, action="store_true", help="Whether to use wandb for logging.")
     parser.add_argument("--wandb_project", type=str, default=None, help="Wandb project name.")
     parser.add_argument("--wandb_name", type=str, default=None, help="Wandb run name.")

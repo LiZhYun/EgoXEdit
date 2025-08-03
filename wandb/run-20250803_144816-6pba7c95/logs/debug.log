@@ -1,0 +1,21 @@
+2025-08-03 14:48:16,964 INFO    MainThread:20714 [wandb_setup.py:_flush():80] Current SDK version is 0.21.0
+2025-08-03 14:48:16,964 INFO    MainThread:20714 [wandb_setup.py:_flush():80] Configure stats pid to 20714
+2025-08-03 14:48:16,965 INFO    MainThread:20714 [wandb_setup.py:_flush():80] Loading settings from /home/zhiyuan/.config/wandb/settings
+2025-08-03 14:48:16,965 INFO    MainThread:20714 [wandb_setup.py:_flush():80] Loading settings from /home/zhiyuan/Code/h2rego_video_generation/wandb/settings
+2025-08-03 14:48:16,965 INFO    MainThread:20714 [wandb_setup.py:_flush():80] Loading settings from environment variables
+2025-08-03 14:48:16,965 INFO    MainThread:20714 [wandb_init.py:setup_run_log_directory():703] Logging user logs to /home/zhiyuan/Code/h2rego_video_generation/wandb/run-20250803_144816-6pba7c95/logs/debug.log
+2025-08-03 14:48:16,965 INFO    MainThread:20714 [wandb_init.py:setup_run_log_directory():704] Logging internal logs to /home/zhiyuan/Code/h2rego_video_generation/wandb/run-20250803_144816-6pba7c95/logs/debug-internal.log
+2025-08-03 14:48:16,965 INFO    MainThread:20714 [wandb_init.py:init():830] calling init triggers
+2025-08-03 14:48:16,965 INFO    MainThread:20714 [wandb_init.py:init():835] wandb.init called with sweep_config: {}
+config: {'dataset_base_path': '/home/zhiyuan/Code/small_dataset/', 'dataset_metadata_path': None, 'max_pixels': 921600, 'height': 240, 'width': 416, 'num_frames': 81, 'data_file_keys': 'image,video', 'dataset_repeat': 1, 'model_paths': None, 'model_id_with_origin_paths': 'Wan-AI/Wan2.1-VACE-1.3B:diffusion_pytorch_model*.safetensors,Wan-AI/Wan2.1-VACE-1.3B:models_t5_umt5-xxl-enc-bf16.pth,Wan-AI/Wan2.1-VACE-1.3B:Wan2.1_VAE.pth,Wan-AI/Wan2.1-I2V-14B-480P:models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth', 'learning_rate': 0.0001, 'num_epochs': 50, 'output_path': './output/vace_e_lora', 'remove_prefix_in_ckpt': 'pipe.vace_e.,', 'trainable_models': 'vace_e', 'lora_base_model': None, 'lora_target_modules': 'q,k,v,o,ffn.0,ffn.2', 'lora_rank': 32, 'extra_inputs': None, 'use_gradient_checkpointing_offload': False, 'gradient_accumulation_steps': 4, 'batch_size': 4, 'num_workers': 0, 'use_video_collate': True, 'use_wandb': True, 'wandb_project': 'wanvideo-training', 'enable_vace_e': True, 'vace_e_layers': '0', 'vace_e_task_processing': True, 'task_metadata_path': '/home/zhiyuan/Code/h2rego_data_preprocess/data/ph2d_metadata.json', 'max_hand_motion_length': 512, 'max_object_trajectory_length': 512, 'max_objects': 10, 'fallback_to_video_only': False, 'club_lambda': 1.0, 'club_update_freq': 1, 'club_training_steps': 5, 'club_lr': 0.001, 'enable_club_loss': True, 'disable_club_loss': False, '_wandb': {}}
+2025-08-03 14:48:16,965 INFO    MainThread:20714 [wandb_init.py:init():871] starting backend
+2025-08-03 14:48:17,182 INFO    MainThread:20714 [wandb_init.py:init():874] sending inform_init request
+2025-08-03 14:48:17,184 INFO    MainThread:20714 [wandb_init.py:init():882] backend started and connected
+2025-08-03 14:48:17,186 INFO    MainThread:20714 [wandb_init.py:init():953] updated telemetry
+2025-08-03 14:48:17,192 INFO    MainThread:20714 [wandb_init.py:init():977] communicating run to backend with 90.0 second timeout
+2025-08-03 14:48:22,871 INFO    MainThread:20714 [wandb_init.py:init():1029] starting run threads in backend
+2025-08-03 14:48:22,992 INFO    MainThread:20714 [wandb_run.py:_console_start():2458] atexit reg
+2025-08-03 14:48:22,992 INFO    MainThread:20714 [wandb_run.py:_redirect():2306] redirect: wrap_raw
+2025-08-03 14:48:22,993 INFO    MainThread:20714 [wandb_run.py:_redirect():2375] Wrapping output streams.
+2025-08-03 14:48:22,993 INFO    MainThread:20714 [wandb_run.py:_redirect():2398] Redirects installed.
+2025-08-03 14:48:22,995 INFO    MainThread:20714 [wandb_init.py:init():1075] run started, returning control to user process

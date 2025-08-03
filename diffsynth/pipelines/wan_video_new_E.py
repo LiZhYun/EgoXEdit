@@ -30,12 +30,12 @@ VACE-E Enhancements:
 - Backward Compatibility: Automatic conversion from legacy 10D single-hand format
 - DiT Integration: Seamless integration with existing diffusion transformer architecture
 """
-
+# Support for batch size > 1 implemented
 import torch, warnings, glob, os, types
 import numpy as np
 from PIL import Image
 from einops import repeat, reduce
-from typing import Optional, Union
+from typing import Optional, Union, List
 from dataclasses import dataclass
 from modelscope import snapshot_download
 from einops import rearrange
@@ -213,19 +213,21 @@ class BasePipeline(torch.nn.Module):
             Preprocessed torch tensor
         """
         # Transform a PIL.Image to torch.Tensor
-        image = torch.Tensor(np.array(image, dtype=np.float32))
+        image = torch.Tensor(np.array(image, dtype=np.float32)) if isinstance(image, Image.Image) else image
         image = image.to(dtype=torch_dtype or self.torch_dtype, device=device or self.device)
-        image = image * ((max_value - min_value) / 255) + min_value
-        image = repeat(image, f"H W C -> {pattern}", **({"B": 1} if "B" in pattern else {}))
+        image = image * ((max_value - min_value) / 255) + min_value if len(image.shape) == 3 else image
+        image = repeat(image, f"H W C -> {pattern}", **({"B": 1} if "B" in pattern else {})) if len(image.shape) == 3 else image
         return image
 
 
     def preprocess_video(self, video, torch_dtype=None, device=None, pattern="B C T H W", min_value=-1, max_value=1):
         """
-        Convert list of PIL Images to video tensor.
+        Convert video input to tensor with specified format.
         
         Args:
-            video: List of PIL Images representing video frames
+            video: Either:
+                   - List of PIL Images representing video frames
+                   - Batched tensor with shape [B, T, C, H, W]
             torch_dtype: Target tensor dtype
             device: Target device  
             pattern: Tensor dimension pattern (e.g., "B C T H W" for batch, channel, time, height, width)
@@ -235,10 +237,32 @@ class BasePipeline(torch.nn.Module):
         Returns:
             Video tensor with shape according to pattern
         """
-        # Transform a list of PIL.Image to torch.Tensor
-        video = [self.preprocess_image(image, torch_dtype=torch_dtype, device=device, min_value=min_value, max_value=max_value) for image in video]
-        video = torch.stack(video, dim=pattern.index("T") // 2)
-        return video
+        if isinstance(video, torch.Tensor):
+            # Handle batched tensor input from collate function
+            # Input format is [B, T, C, H, W], target is usually [B, C, T, H, W]
+            video = video.to(dtype=torch_dtype or self.torch_dtype, device=device or self.device)
+            
+            # Convert from [B, T, C, H, W] to target pattern if needed
+            if len(video.shape) == 5:
+                current_pattern = "B T C H W"
+                
+                # Rearrange to target pattern if different
+                if current_pattern != pattern:
+                    from einops import rearrange
+                    video = rearrange(video, f"{current_pattern} -> {pattern}")
+            
+            # Normalize values if needed
+            if video.max() > max_value or video.min() < min_value:
+                # Assume input is in [0, 255] range if max > 1
+                if video.max() > 1:
+                    video = video * ((max_value - min_value) / 255) + min_value
+                
+            return video
+        else:
+            # Handle list of PIL Images (backward compatibility)
+            video = [self.preprocess_image(image, torch_dtype=torch_dtype, device=device, min_value=min_value, max_value=max_value) for image in video]
+            video = torch.stack(video, dim=pattern.index("T") // 2)
+            return video
 
 
     def vae_output_to_image(self, vae_output, pattern="B C H W", min_value=-1, max_value=1):
@@ -1127,26 +1151,26 @@ class WanVideoPipeline(BasePipeline):
     def __call__(
         self,
         # Prompt
-        prompt: str,
-        negative_prompt: Optional[str] = "",
+        prompt: Union[str, List[str]],
+        negative_prompt: Optional[Union[str, List[str]]] = "",
         # Image-to-video
-        input_image: Optional[Image.Image] = None,
+        input_image: Optional[Union[Image.Image, List[Image.Image]]] = None,
         # First-last-frame-to-video
-        end_image: Optional[Image.Image] = None,
+        end_image: Optional[Union[Image.Image, List[Image.Image]]] = None,
         # Video-to-video
-        input_video: Optional[list[Image.Image]] = None,
+        input_video: Optional[Union[list[Image.Image], List[list[Image.Image]]]] = None,
         denoising_strength: Optional[float] = 1.0,
         # ControlNet
-        control_video: Optional[list[Image.Image]] = None,
-        reference_image: Optional[Image.Image] = None,
+        control_video: Optional[Union[list[Image.Image], List[list[Image.Image]]]] = None,
+        reference_image: Optional[Union[Image.Image, List[Image.Image]]] = None,
         # Camera control
         camera_control_direction: Optional[Literal["Left", "Right", "Up", "Down", "LeftUp", "LeftDown", "RightUp", "RightDown"]] = None,
         camera_control_speed: Optional[float] = 1/54,
         camera_control_origin: Optional[tuple] = (0, 0.532139961, 0.946026558, 0.5, 0.5, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0),
         # VACE
-        vace_video: Optional[list[Image.Image]] = None,
-        vace_video_mask: Optional[Image.Image] = None,
-        vace_reference_image: Optional[Image.Image] = None,
+        vace_video: Optional[Union[list[Image.Image], List[list[Image.Image]]]] = None,
+        vace_video_mask: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        vace_reference_image: Optional[Union[Image.Image, List[Image.Image]]] = None,
         vace_scale: Optional[float] = 1.0,
         # VACE-E: Enhanced video editing with task-embodiment fusion
         vace_e_text_features: Optional[torch.Tensor] = None,
@@ -1159,12 +1183,14 @@ class WanVideoPipeline(BasePipeline):
         vace_e_embodiment_image_features: Optional[torch.Tensor] = None,
         vace_e_scale: Optional[float] = 1.0,
         # Randomness
-        seed: Optional[int] = None,
+        seed: Optional[Union[int, List[int]]] = None,
         rand_device: Optional[str] = "cpu",
         # Shape
         height: Optional[int] = 480,
         width: Optional[int] = 832,
         num_frames=81,
+        # Batch processing
+        batch_size: Optional[int] = None,
         # Classifier-free guidance
         cfg_scale: Optional[float] = 5.0,
         cfg_merge: Optional[bool] = False,
@@ -1238,6 +1264,32 @@ class WanVideoPipeline(BasePipeline):
         Returns:
             List of PIL Images representing the generated video
         """
+        # Determine batch size from inputs (tensor inputs will have batch dimension)
+        if batch_size is None:
+            batch_size = 1
+            # Infer batch size from tensor inputs
+            for param in [vace_e_text_features, vace_e_hand_motion_sequence, 
+                         vace_e_object_trajectory_sequence, vace_e_object_ids,
+                         vace_e_text_mask, vace_e_motion_mask, vace_e_trajectory_mask,
+                         vace_e_embodiment_image_features]:
+                if isinstance(param, torch.Tensor) and param.dim() > 0:
+                    batch_size = max(batch_size, param.shape[0])
+            # For string inputs (prompts), check if they are lists
+            if isinstance(prompt, list):
+                batch_size = max(batch_size, len(prompt))
+            if isinstance(negative_prompt, list):
+                batch_size = max(batch_size, len(negative_prompt))
+        
+        # Ensure string inputs are lists for batch processing
+        if isinstance(prompt, str):
+            prompt = [prompt] * batch_size
+        if isinstance(negative_prompt, str):
+            negative_prompt = [negative_prompt] * batch_size
+        
+        # Handle seed as list for batch processing
+        if isinstance(seed, int) or seed is None:
+            seed = [seed] * batch_size
+        
         # Scheduler
         self.scheduler.set_timesteps(num_inference_steps, denoising_strength=denoising_strength, shift=sigma_shift)
         
@@ -1271,6 +1323,7 @@ class WanVideoPipeline(BasePipeline):
             "motion_bucket_id": motion_bucket_id,
             "tiled": tiled, "tile_size": tile_size, "tile_stride": tile_stride,
             "sliding_window_size": sliding_window_size, "sliding_window_stride": sliding_window_stride,
+            "batch_size": batch_size,
         }
         
         # Process inputs through modular pipeline units
@@ -1301,13 +1354,27 @@ class WanVideoPipeline(BasePipeline):
         if vace_reference_image is not None:
             inputs_shared["latents"] = inputs_shared["latents"][:, :, 1:]
 
-        # Decode
+        # Decode and handle batched output
         self.load_models_to_device(['vae'])
-        video = self.vae.decode(inputs_shared["latents"], device=self.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
-        video = self.vae_output_to_video(video)
-        self.load_models_to_device([])
-
-        return video
+        
+        if batch_size > 1:
+            # For batched processing, decode each video separately
+            # since vae_output_to_video doesn't handle batch dimension
+            batch_videos = []
+            for i in range(batch_size):
+                # Extract single video from batch [1, C, T, H, W]
+                single_latent = inputs_shared["latents"][i:i+1]
+                single_video_tensor = self.vae.decode(single_latent, device=self.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
+                single_video = self.vae_output_to_video(single_video_tensor)
+                batch_videos.append(single_video)
+            self.load_models_to_device([])
+            return batch_videos
+        else:
+            # Single video - decode as before for backward compatibility
+            video = self.vae.decode(inputs_shared["latents"], device=self.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)
+            video = self.vae_output_to_video(video)
+            self.load_models_to_device([])
+            return video
 
 
 # === PIPELINE UNIT SYSTEM ===
@@ -1458,13 +1525,25 @@ class WanVideoUnit_NoiseInitializer(PipelineUnit):
     - Channels: 16 latent channels for Wan models
     """
     def __init__(self):
-        super().__init__(input_params=("height", "width", "num_frames", "seed", "rand_device", "vace_reference_image"))
+        super().__init__(input_params=("height", "width", "num_frames", "seed", "rand_device", "vace_reference_image", "batch_size"))
 
-    def process(self, pipe: WanVideoPipeline, height, width, num_frames, seed, rand_device, vace_reference_image):
+    def process(self, pipe: WanVideoPipeline, height, width, num_frames, seed, rand_device, vace_reference_image, batch_size=1):
         length = (num_frames - 1) // 4 + 1
         if vace_reference_image is not None:
             length += 1
-        noise = pipe.generate_noise((1, 16, length, height//8, width//8), seed=seed, rand_device=rand_device)
+        
+        # Handle batched seed generation
+        if isinstance(seed, list):
+            # Generate noise for each seed in the batch
+            noise_list = []
+            for s in seed:
+                noise = pipe.generate_noise((1, 16, length, height//8, width//8), seed=s, rand_device=rand_device)
+                noise_list.append(noise)
+            noise = torch.cat(noise_list, dim=0)  # [batch_size, 16, length, height//8, width//8]
+        else:
+            # Single seed for entire batch
+            noise = pipe.generate_noise((batch_size, 16, length, height//8, width//8), seed=seed, rand_device=rand_device)
+        
         if vace_reference_image is not None:
             noise = torch.concat((noise[:, :, -1:], noise[:, :, :-1]), dim=2)
         return {"noise": noise}
@@ -1539,35 +1618,91 @@ class WanVideoUnit_ImageEmbedder(PipelineUnit):
     """
     def __init__(self):
         super().__init__(
-            input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride"),
+            input_params=("input_image", "end_image", "num_frames", "height", "width", "tiled", "tile_size", "tile_stride", "batch_size"),
             onload_model_names=("image_encoder", "vae")
         )
 
-    def process(self, pipe: WanVideoPipeline, input_image, end_image, num_frames, height, width, tiled, tile_size, tile_stride):
+    def process(self, pipe: WanVideoPipeline, input_image, end_image, num_frames, height, width, tiled, tile_size, tile_stride, batch_size=1):
         if input_image is None:
             return {}
         pipe.load_models_to_device(self.onload_model_names)
-        image = pipe.preprocess_image(input_image.resize((width, height))).to(pipe.device)
-        clip_context = pipe.image_encoder.encode_image([image])
-        msk = torch.ones(1, num_frames, height//8, width//8, device=pipe.device)
+        
+        # Handle both PIL Image and batched tensor inputs
+        if isinstance(input_image, torch.Tensor):
+            # Batched tensor input [B, C, H, W] from collate function
+            image = input_image.to(pipe.device)
+            batch_size = image.shape[0]
+        else:
+            # Single PIL Image input - convert to tensor
+            image = pipe.preprocess_image(input_image.resize((width, height))).to(pipe.device)
+            image = image.unsqueeze(0)  # Add batch dimension [1, C, H, W]
+            batch_size = 1
+        
+        # Encode images with CLIP
+        clip_context_list = []
+        for i in range(batch_size):
+            clip_emb = pipe.image_encoder.encode_image([image[i]])
+            clip_context_list.append(clip_emb)
+        clip_context = torch.cat(clip_context_list, dim=0)
+        
+        # Create mask for image frames
+        msk = torch.ones(batch_size, num_frames, height//8, width//8, device=pipe.device)
         msk[:, 1:] = 0
+        
+        # Handle end_image for FLF2V (First-Last Frame to Video)
         if end_image is not None:
-            end_image = pipe.preprocess_image(end_image.resize((width, height))).to(pipe.device)
-            vae_input = torch.concat([image.transpose(0,1), torch.zeros(3, num_frames-2, height, width).to(image.device), end_image.transpose(0,1)],dim=1)
+            if isinstance(end_image, torch.Tensor):
+                end_image = end_image.to(pipe.device)
+            else:
+                end_image = pipe.preprocess_image(end_image.resize((width, height))).to(pipe.device)
+                end_image = end_image.unsqueeze(0)
+            
+            # Create vae_input with first and last frames
+            vae_input_list = []
+            for i in range(batch_size):
+                vae_in = torch.concat([
+                    image[i:i+1].transpose(0,1), 
+                    torch.zeros(3, num_frames-2, height, width).to(image.device), 
+                    end_image[i:i+1].transpose(0,1)
+                ], dim=1)
+                vae_input_list.append(vae_in)
+            vae_input = torch.cat(vae_input_list, dim=0)
+            
+            # Add end_image CLIP encoding if needed
             if pipe.dit.has_image_pos_emb:
-                clip_context = torch.concat([clip_context, pipe.image_encoder.encode_image([end_image])], dim=1)
+                end_clip_list = []
+                for i in range(batch_size):
+                    end_clip = pipe.image_encoder.encode_image([end_image[i]])
+                    end_clip_list.append(end_clip)
+                end_clip_context = torch.cat(end_clip_list, dim=0)
+                clip_context = torch.concat([clip_context, end_clip_context], dim=1)
             msk[:, -1:] = 1
         else:
-            vae_input = torch.concat([image.transpose(0, 1), torch.zeros(3, num_frames-1, height, width).to(image.device)], dim=1)
+            # Only start image, fill rest with zeros
+            vae_input_list = []
+            for i in range(batch_size):
+                vae_in = torch.concat([
+                    image[i:i+1].transpose(0, 1), 
+                    torch.zeros(3, num_frames-1, height, width).to(image.device)
+                ], dim=1)
+                vae_input_list.append(vae_in)
+            vae_input = torch.cat(vae_input_list, dim=0)
 
+        # Process mask for temporal compression
         msk = torch.concat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
-        msk = msk.view(1, msk.shape[1] // 4, 4, height//8, width//8)
-        msk = msk.transpose(1, 2)[0]
+        msk = msk.view(batch_size, msk.shape[1] // 4, 4, height//8, width//8)
+        msk = msk.transpose(1, 2)  # [batch_size, 4, temporal_length, height//8, width//8]
         
-        y = pipe.vae.encode([vae_input.to(dtype=pipe.torch_dtype, device=pipe.device)], device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
-        y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
-        y = torch.concat([msk, y])
-        y = y.unsqueeze(0)
+        # Encode with VAE
+        y_list = []
+        for i in range(batch_size):
+            y_single = pipe.vae.encode([vae_input[i:i+1].to(dtype=pipe.torch_dtype, device=pipe.device)], 
+                                     device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride)[0]
+            y_single = y_single.to(dtype=pipe.torch_dtype, device=pipe.device)
+            y_combined = torch.concat([msk[i], y_single[0]])  # Combine mask and VAE output
+            y_list.append(y_combined)
+        
+        y = torch.stack(y_list, dim=0)  # [batch_size, channels, temporal, height//8, width//8]
         clip_context = clip_context.to(dtype=pipe.torch_dtype, device=pipe.device)
         y = y.to(dtype=pipe.torch_dtype, device=pipe.device)
         return {"clip_feature": clip_context, "y": y}
@@ -1738,7 +1873,8 @@ class WanVideoUnit_VACE(PipelineUnit):
             reactive = pipe.vae.encode(reactive, device=pipe.device, tiled=tiled, tile_size=tile_size, tile_stride=tile_stride).to(dtype=pipe.torch_dtype, device=pipe.device)
             vace_video_latents = torch.concat((inactive, reactive), dim=1)
             
-            vace_mask_latents = rearrange(vace_video_mask[0,0], "T (H P) (W Q) -> 1 (P Q) T H W", P=8, Q=8)
+            # Support batch size > 1: process all batches, use first channel
+            vace_mask_latents = rearrange(vace_video_mask[:, 0], "B T (H P) (W Q) -> B (P Q) T H W", P=8, Q=8)
             vace_mask_latents = torch.nn.functional.interpolate(vace_mask_latents, size=((vace_mask_latents.shape[2] + 3) // 4, vace_mask_latents.shape[3], vace_mask_latents.shape[4]), mode='nearest-exact')
             
             if vace_reference_image is None:

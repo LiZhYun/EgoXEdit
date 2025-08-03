@@ -1,0 +1,35 @@
+  0%|                                                                                                                                                                                 | 0/7 [00:11<?, ?it/s]
+Traceback (most recent call last):
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/__main__.py", line 71, in <module>
+    cli.main()
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/../debugpy/server/cli.py", line 501, in main
+    run()
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/../debugpy/server/cli.py", line 351, in run_file
+    runpy.run_path(target, run_name="__main__")
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/_vendored/pydevd/_pydevd_bundle/pydevd_runpy.py", line 310, in run_path
+    return _run_module_code(code, init_globals, run_name, pkg_name=pkg_name, script_name=fname)
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/_vendored/pydevd/_pydevd_bundle/pydevd_runpy.py", line 127, in _run_module_code
+    _run_code(code, mod_globals, init_globals, mod_name, mod_spec, pkg_name, script_name)
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/_vendored/pydevd/_pydevd_bundle/pydevd_runpy.py", line 118, in _run_code
+    exec(code, run_globals)
+  File "/home/zhiyuan/Code/h2rego_video_generation/examples/wanvideo/model_training/train_E.py", line 251, in <module>
+    launch_training_task(
+  File "/home/zhiyuan/Code/h2rego_video_generation/diffsynth/trainers/utils.py", line 608, in launch_training_task
+    loss, log_loss = model(data)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zhiyuan/Code/h2rego_video_generation/examples/wanvideo/model_training/train_E.py", line 164, in forward
+    if inputs is None: inputs = self.forward_preprocess(data)
+  File "/home/zhiyuan/Code/h2rego_video_generation/examples/wanvideo/model_training/train_E.py", line 141, in forward_preprocess
+    embodiment_image = self.pipe.preprocess_image(data["embodiment_image"]).to(self.pipe.device)
+  File "/home/zhiyuan/Code/h2rego_video_generation/diffsynth/pipelines/wan_video_new_E.py", line 216, in preprocess_image
+    image = torch.Tensor(np.array(image, dtype=np.float32))
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/_tensor.py", line 1227, in __array__
+    return self.numpy().astype(dtype, copy=False)
+TypeError: can't convert cuda:0 device type tensor to numpy. Use Tensor.cpu() to copy the tensor to host memory first.

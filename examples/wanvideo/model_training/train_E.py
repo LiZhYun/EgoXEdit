@@ -1,6 +1,6 @@
 import torch, os, json
 from diffsynth.pipelines.wan_video_new_E import WanVideoPipeline, ModelConfig
-from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, wan_parser
+from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, wan_parser, enable_club_training_defaults
 from dataset_E import VideoDatasetE, create_training_dataset
 import warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -72,6 +72,9 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         self.training_step = 0
 
     def forward_preprocess(self, data):
+        # Determine batch size from video tensor
+        batch_size = data["video"].shape[0] if "video" in data else 1
+        
         # CFG-sensitive parameters
         inputs_posi = {"prompt": data["prompt"]}
         inputs_nega = {}
@@ -80,9 +83,10 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         inputs_shared = {
             # Standard video training parameters (following train.py pattern)
             "input_video": data["video"],
-            "height": data["video"][0].size[1],
-            "width": data["video"][0].size[0],
-            "num_frames": len(data["video"]),
+            "height": data["video"].shape[3],
+            "width": data["video"].shape[4],
+            "num_frames": data["video"].shape[1],
+            "batch_size": batch_size,  # Add batch size for pipeline units
             # Training-specific parameters (do not modify unless you know what this causes)
             "cfg_scale": 1,
             "tiled": False,
@@ -107,7 +111,7 @@ class WanTrainingModuleE(DiffusionTrainingModule):
             # Let the pipeline encode the prompt to get text features
             vace_e_text_features = self.pipe.prompter.encode_prompt(data["prompt"], device=self.pipe.device)
             inputs_shared["vace_e_text_features"] = vace_e_text_features
-            inputs_shared["vace_e_text_mask"] = torch.ones(1, vace_e_text_features.shape[1], device=self.pipe.device).bool()
+            inputs_shared["vace_e_text_mask"] = torch.ones(vace_e_text_features.shape[0], vace_e_text_features.shape[1], device=self.pipe.device).bool()
         
         # 2. Hand motion sequence  
         if "hand_motion_sequence" in data and data["hand_motion_sequence"] is not None:
@@ -116,7 +120,7 @@ class WanTrainingModuleE(DiffusionTrainingModule):
             if hand_motion.dim() == 2:
                 hand_motion = hand_motion.unsqueeze(0)
             inputs_shared["vace_e_hand_motion_sequence"] = hand_motion
-            inputs_shared["vace_e_motion_mask"] = torch.ones(1, hand_motion.shape[1], device=self.pipe.device).bool()
+            inputs_shared["vace_e_motion_mask"] = torch.ones(hand_motion.shape[0], hand_motion.shape[1], device=self.pipe.device).bool()
         
         # 3. Object trajectory sequence
         if "object_trajectory_sequence" in data and data["object_trajectory_sequence"] is not None:
@@ -125,7 +129,7 @@ class WanTrainingModuleE(DiffusionTrainingModule):
             if obj_traj.dim() == 3:
                 obj_traj = obj_traj.unsqueeze(0)
             inputs_shared["vace_e_object_trajectory_sequence"] = obj_traj
-            inputs_shared["vace_e_trajectory_mask"] = torch.ones(1, obj_traj.shape[1], obj_traj.shape[2], device=self.pipe.device).bool()
+            inputs_shared["vace_e_trajectory_mask"] = torch.ones(obj_traj.shape[0], obj_traj.shape[1], obj_traj.shape[2], device=self.pipe.device).bool()
         
         # 4. Object IDs
         if "object_ids" in data and data["object_ids"] is not None:
@@ -148,9 +152,9 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         # Extra inputs (following train.py pattern)
         for extra_input in self.extra_inputs:
             if extra_input == "input_image":
-                inputs_shared["input_image"] = data["video"][0]
+                inputs_shared["input_image"] = data["video"][:, 0]
             elif extra_input == "end_image":
-                inputs_shared["end_image"] = data["video"][-1]
+                inputs_shared["end_image"] = data["video"][:, -1]
             else:
                 inputs_shared[extra_input] = data[extra_input]
         
@@ -198,6 +202,9 @@ if __name__ == "__main__":
     parser.add_argument("--disable_club_loss", action="store_true", help="Disable CLUB loss (overrides enable_club_loss)")
     
     args = parser.parse_args()
+    
+    # Enable appropriate defaults for CLUB training
+    args = enable_club_training_defaults(args)
     
     # Parse VACE-E layers
     vace_e_layers = tuple(map(int, args.vace_e_layers.split(","))) if args.vace_e_layers else (0, 5, 10, 15, 20, 25)
@@ -249,4 +256,9 @@ if __name__ == "__main__":
         dataset, model, model_logger, optimizer, scheduler,
         num_epochs=args.num_epochs,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        use_video_collate=args.use_video_collate,
+        video_min_value=args.video_min_value,
+        video_max_value=args.video_max_value,
     )

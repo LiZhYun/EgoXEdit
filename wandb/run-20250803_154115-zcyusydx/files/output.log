@@ -1,0 +1,60 @@
+  0%|                                                                                                                                                                                 | 0/7 [04:11<?, ?it/s]
+✅ Dual-hand motion sequence detected: torch.Size([4, 257, 20]) (20D format)
+Traceback (most recent call last):
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/__main__.py", line 71, in <module>
+    cli.main()
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/../debugpy/server/cli.py", line 501, in main
+    run()
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher/../../debugpy/../debugpy/server/cli.py", line 351, in run_file
+    runpy.run_path(target, run_name="__main__")
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/_vendored/pydevd/_pydevd_bundle/pydevd_runpy.py", line 310, in run_path
+    return _run_module_code(code, init_globals, run_name, pkg_name=pkg_name, script_name=fname)
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/_vendored/pydevd/_pydevd_bundle/pydevd_runpy.py", line 127, in _run_module_code
+    _run_code(code, mod_globals, init_globals, mod_name, mod_spec, pkg_name, script_name)
+  File "/home/zhiyuan/.cursor/extensions/ms-python.debugpy-2025.10.0-linux-x64/bundled/libs/debugpy/_vendored/pydevd/_pydevd_bundle/pydevd_runpy.py", line 118, in _run_code
+    exec(code, run_globals)
+  File "/home/zhiyuan/Code/h2rego_video_generation/examples/wanvideo/model_training/train_E.py", line 255, in <module>
+    launch_training_task(
+  File "/home/zhiyuan/Code/h2rego_video_generation/diffsynth/trainers/utils.py", line 629, in launch_training_task
+    loss, log_loss = model(data)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zhiyuan/Code/h2rego_video_generation/examples/wanvideo/model_training/train_E.py", line 172, in forward
+    loss, log_loss = self.pipe.training_loss(training_step=self.training_step, **models, **inputs)
+  File "/home/zhiyuan/Code/h2rego_video_generation/diffsynth/pipelines/wan_video_new_E.py", line 633, in training_loss
+    noise_pred = self.model_fn(**inputs, timestep=timestep)
+  File "/home/zhiyuan/Code/h2rego_video_generation/diffsynth/pipelines/wan_video_new_E.py", line 2418, in model_fn_wan_video
+    vace_hints = vace(x, vace_context, context, t_mod, freqs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zhiyuan/Code/h2rego_video_generation/diffsynth/models/wan_video_vace.py", line 305, in forward
+    c = block(c, x, context, t_mod, freqs) # c [1, 34320, 1536] x [1, 34320, 1536] context [1, 512, 1536]
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zhiyuan/Code/h2rego_video_generation/diffsynth/models/wan_video_vace.py", line 113, in forward
+    c = super().forward(c, context, t_mod, freqs)
+  File "/home/zhiyuan/Code/h2rego_video_generation/diffsynth/models/wan_video_dit.py", line 222, in forward
+    x = self.gate(x, gate_mlp, self.ffn(input_x))
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/container.py", line 240, in forward
+    input = module(input)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/zhiyuan/miniconda3/envs/diffstudio/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 734, in forward
+    return F.gelu(input, approximate=self.approximate)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 588.00 MiB. GPU 0 has a total capacity of 23.54 GiB of which 593.81 MiB is free. Including non-PyTorch memory, this process has 22.18 GiB memory in use. Of the allocated memory 20.54 GiB is allocated by PyTorch, and 1.33 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
