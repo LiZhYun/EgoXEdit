@@ -949,32 +949,33 @@ class VaceWanModel(torch.nn.Module):
         Returns:
             Dict of VACE-E hints for each layer: {layer_id: hint_tensor}
         """
-        # Get model device for consistent tensor placement
+        # Get model device and dtype for consistent tensor placement
         model_device = next(self.parameters()).device
+        model_dtype = next(self.parameters()).dtype
         
         # Debug: Print device information
         # print(f"🔧 VACE-E Model device: {model_device}")
         # print(f"🔧 Hand motion device: {hand_motion_sequence.device if hand_motion_sequence is not None else 'None'}")
         
-        # Move all input tensors to model device to prevent device mismatch errors
+        # Move all input tensors to model device and dtype to prevent mismatch errors
         if text_features is not None:
-            text_features = text_features.to(model_device)
+            text_features = text_features.to(device=model_device, dtype=model_dtype)
             # print(f"🔧 Text features moved to: {text_features.device}")
         if hand_motion_sequence is not None:
-            hand_motion_sequence = hand_motion_sequence.to(model_device)
+            hand_motion_sequence = hand_motion_sequence.to(device=model_device, dtype=model_dtype)
             # print(f"🔧 Hand motion moved to: {hand_motion_sequence.device}")
         if object_trajectory_sequence is not None:
-            object_trajectory_sequence = object_trajectory_sequence.to(model_device)
+            object_trajectory_sequence = object_trajectory_sequence.to(device=model_device, dtype=model_dtype)
         if object_ids is not None:
-            object_ids = object_ids.to(model_device)
+            object_ids = object_ids.to(device=model_device)
         if text_mask is not None:
-            text_mask = text_mask.to(model_device)
+            text_mask = text_mask.to(device=model_device)
         if motion_mask is not None:
-            motion_mask = motion_mask.to(model_device)
+            motion_mask = motion_mask.to(device=model_device)
         if trajectory_mask is not None:
-            trajectory_mask = trajectory_mask.to(model_device)
+            trajectory_mask = trajectory_mask.to(device=model_device)
         if embodiment_image_features is not None:
-            embodiment_image_features = embodiment_image_features.to(model_device)
+            embodiment_image_features = embodiment_image_features.to(device=model_device, dtype=model_dtype)
         
         batch_size = x.shape[0]
         
@@ -988,8 +989,8 @@ class VaceWanModel(torch.nn.Module):
             # Process hand motion if available
             motion_features = None
             if hand_motion_sequence is not None:
-                # Ensure hand motion encoder is on correct device
-                self.hand_motion_encoder = self.hand_motion_encoder.to(model_device)
+                # Ensure hand motion encoder is on correct device and dtype
+                self.hand_motion_encoder = self.hand_motion_encoder.to(device=model_device, dtype=model_dtype)
                 
                 # Split dual-hand motion sequence: [left_wrist(9), right_wrist(9), left_gripper(1), right_gripper(1)]
                 # Expected input shape: [batch, seq_len, 20]
@@ -1009,22 +1010,22 @@ class VaceWanModel(torch.nn.Module):
             # Process object trajectories if available
             trajectory_features = None
             if object_trajectory_sequence is not None:
-                # Ensure object trajectory encoder is on correct device
-                self.object_trajectory_encoder = self.object_trajectory_encoder.to(model_device)
+                # Ensure object trajectory encoder is on correct device and dtype
+                self.object_trajectory_encoder = self.object_trajectory_encoder.to(device=model_device, dtype=model_dtype)
                 
                 trajectory_features = self.object_trajectory_encoder(
                     trajectory_sequence=object_trajectory_sequence, object_ids=object_ids, mask=trajectory_mask
                 )
             
             # Fuse all task modalities
-            # Ensure all features are on the same device before fusion
+            # Ensure all features are on the same device and dtype before fusion
             if motion_features is not None:
-                motion_features = motion_features.to(model_device)
+                motion_features = motion_features.to(device=model_device, dtype=model_dtype)
             if trajectory_features is not None:
-                trajectory_features = trajectory_features.to(model_device)
+                trajectory_features = trajectory_features.to(device=model_device, dtype=model_dtype)
                 
-            # Ensure task fusion module is on correct device
-            self.task_fusion = self.task_fusion.to(model_device)
+            # Ensure task fusion module is on correct device and dtype
+            self.task_fusion = self.task_fusion.to(device=model_device, dtype=model_dtype)
                 
             task_features = self.task_fusion(
                 text_features=text_features,
@@ -1041,8 +1042,8 @@ class VaceWanModel(torch.nn.Module):
         # === EMBODIMENT FEATURE PROCESSING ===
         embodiment_features = None
         if embodiment_image_features is not None:
-            # Ensure embodiment adapter is on correct device
-            self.embodiment_image_adapter = self.embodiment_image_adapter.to(model_device)
+            # Ensure embodiment adapter is on correct device and dtype
+            self.embodiment_image_adapter = self.embodiment_image_adapter.to(device=model_device, dtype=model_dtype)
             
             # Process end-effector image context
             # embodiment_image_features: [batch, 257, 1280] from CLIP
@@ -1124,10 +1125,10 @@ class VaceWanModel(torch.nn.Module):
         
         # === VACE ATTENTION PROCESSING ===
         
-        # Ensure all VACE blocks and projection layers are on correct device
+        # Ensure all VACE blocks and projection layers are on correct device and dtype
         for i, block in enumerate(self.vace_blocks):
-            self.vace_blocks[i] = block.to(model_device)
-        self.task_to_model_proj = self.task_to_model_proj.to(model_device)
+            self.vace_blocks[i] = block.to(device=model_device, dtype=model_dtype)
+        self.task_to_model_proj = self.task_to_model_proj.to(device=model_device, dtype=model_dtype)
         
         # Step 4: Define gradient checkpointing wrapper
         # This enables memory-efficient training for large models
