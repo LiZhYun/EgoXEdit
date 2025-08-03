@@ -1,6 +1,0 @@
-  0%|                                                                                                                                                                                | 0/29 [00:00<?, ?it/s]
-✅ Dual-hand motion sequence detected: torch.Size([1, 186, 20]) (20D format)
-Original feature shapes: task=torch.Size([1, 884, 1536]), embodiment=torch.Size([1, 257, 1536])
-CLUB dimensions: task_dim=1536, embodiment_dim=1536, hidden_size=256
-🎯 Initialized CLUB estimator with dtype torch.bfloat16 successfully!
-Final features for CLUB: task_flat=torch.Size([1, 1536]) torch.bfloat16, embodiment_flat=torch.Size([1, 1536]) torch.bfloat16

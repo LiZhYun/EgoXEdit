@@ -1,6 +1,0 @@
-{"time":"2025-08-03T00:31:51.740786408+08:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
-{"time":"2025-08-03T00:31:53.571959623+08:00","level":"INFO","msg":"stream: created new stream","id":"y8ciaslo"}
-{"time":"2025-08-03T00:31:53.572098994+08:00","level":"INFO","msg":"stream: started","id":"y8ciaslo"}
-{"time":"2025-08-03T00:31:53.572148588+08:00","level":"INFO","msg":"sender: started","stream_id":"y8ciaslo"}
-{"time":"2025-08-03T00:31:53.572136585+08:00","level":"INFO","msg":"writer: Do: started","stream_id":"y8ciaslo"}
-{"time":"2025-08-03T00:31:53.572163295+08:00","level":"INFO","msg":"handler: started","stream_id":"y8ciaslo"}
