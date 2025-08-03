@@ -695,7 +695,7 @@ class WanVideoPipeline(BasePipeline):
                     print(f"CLUB dimensions: task_dim={task_dim}, embodiment_dim={embodiment_dim}, hidden_size={hidden_size}")
                     self.club_estimator = CLUB(task_dim, embodiment_dim, hidden_size).to(device=self.device, dtype=self.torch_dtype)
                     # Initialize CLUB optimizer
-                    self.club_optimizer = torch.optim.Adam(self.club_estimator.parameters(), lr=getattr(self, 'club_lr', 1e-3))
+                    self.club_optimizer = torch.optim.Adam(self.club_estimator.parameters(), lr=getattr(self, 'club_lr', 1e-4))
                     print(f"🎯 Initialized CLUB estimator with dtype {self.torch_dtype} successfully!")
                 
                 # Use reduced features for CLUB computation (already 2D)
@@ -1128,14 +1128,48 @@ class WanVideoPipeline(BasePipeline):
                 print(f"   VACE-E layers: {vace_e_layers}")
                 print(f"   Task processing: {vace_e_task_processing}")
                 print(f"   Device: {device}, Dtype: {torch_dtype}")
+                
+                # Initialize CLUB estimator for mutual information minimization
+                if vace_e_task_processing:
+                    # Both task and embodiment features are projected to main model dimension
+                    feature_dim = pipe.dit.dim  # Main model dimension (e.g., 1536 for 1.3B model)
+                    hidden_size = feature_dim * 2  # Hidden layer size for CLUB networks
+                    
+                    pipe.club_estimator = CLUB(
+                        x_dim=feature_dim,  # Task features dimension
+                        y_dim=feature_dim,  # Embodiment features dimension  
+                        hidden_size=hidden_size
+                    ).to(device=device, dtype=torch_dtype)
+                    
+                    # Separate optimizer for CLUB estimator (typically higher learning rate)
+                    pipe.club_optimizer = torch.optim.Adam(
+                        pipe.club_estimator.parameters(), 
+                        lr=1e-4
+                    )
+                    
+                    print(f"✅ CLUB estimator initialized")
+                    print(f"   Task/Embodiment feature dim: {feature_dim}")
+                    print(f"   CLUB hidden size: {hidden_size}")
+                    print(f"   CLUB optimizer: Adam(lr=1e-4)")
+                else:
+                    pipe.club_estimator = None
+                    pipe.club_optimizer = None
+                    print("ℹ️ CLUB estimator disabled (task processing disabled)")
+                    
             except Exception as e:
                 print(f"⚠️ VACE-E initialization failed: {e}")
                 print("Continuing without VACE-E support...")
                 pipe.vace_e = None
+                pipe.club_estimator = None
+                pipe.club_optimizer = None
         else:
             pipe.vace_e = None
+            pipe.club_estimator = None
+            pipe.club_optimizer = None
             if not enable_vace_e:
                 print("ℹ️ VACE-E disabled by user configuration")
+            else:
+                print("ℹ️ CLUB estimator disabled (no DiT model loaded)")
 
         # Initialize tokenizer
         tokenizer_config.download_if_necessary(local_model_path, skip_download=skip_download)

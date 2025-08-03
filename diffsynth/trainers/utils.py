@@ -4,6 +4,7 @@ from PIL import Image
 import pandas as pd
 from tqdm import tqdm
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 try:
     import wandb
     HAS_WANDB = True
@@ -617,7 +618,15 @@ def launch_training_task(
         collate_fn=collate_fn,
         drop_last=True  # Drop last incomplete batch for consistent CLUB training
     )
-    accelerator = Accelerator(gradient_accumulation_steps=gradient_accumulation_steps)
+    # Configure DDP to handle unused parameters (e.g., VACE-E components that may not always be used)
+    accelerator = Accelerator(
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        # kwargs_handlers=[
+        #     # This ensures DDP can handle parameters that don't receive gradients
+        #     # Common when some model components are conditionally used
+        #     DistributedDataParallelKwargs(find_unused_parameters=True)
+        # ]
+    )
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
     for epoch_id in range(num_epochs):
@@ -656,7 +665,7 @@ def enable_club_training_defaults(args):
         if args.batch_size <= 1:
             print("⚠️  Warning: CLUB loss requires batch_size > 1 for proper mutual information estimation.")
             print("   Automatically setting batch_size=4 and use_video_collate=True")
-            args.batch_size = 4
+            args.batch_size = 2
             args.use_video_collate = True
         
         if not args.use_video_collate:

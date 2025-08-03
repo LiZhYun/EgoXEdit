@@ -28,18 +28,16 @@
                 "1e-4",
                 "--num_epochs",
                 "50",
-                "--gradient_accumulation_steps",
-                "4",
                 "--trainable_models",
                 "vace_e",
                 "--remove_prefix_in_ckpt",
                 "pipe.vace_e.,",
                 "--height",
-                "240",
+                "128",
                 "--width",
                 "416",
                 "--batch_size",
-                "4",
+                "1",
             ]
         }
     ]
