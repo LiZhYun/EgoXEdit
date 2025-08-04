@@ -627,11 +627,12 @@ def launch_training_task(
         #     DistributedDataParallelKwargs(find_unused_parameters=True)
         # ]
     )
-    model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
-    # Set accelerator instance on model for distributed feature gathering
+    # Set accelerator instance on model BEFORE preparation for distributed feature gathering
     if hasattr(model, 'set_accelerator'):
         model.set_accelerator(accelerator)
+    
+    model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
