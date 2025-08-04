@@ -629,6 +629,10 @@ def launch_training_task(
     )
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
+    # Set accelerator instance on model for distributed feature gathering
+    if hasattr(model, 'set_accelerator'):
+        model.set_accelerator(accelerator)
+    
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
             if data is None:  # Skip None batches

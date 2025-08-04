@@ -585,30 +585,17 @@ class WanVideoPipeline(BasePipeline):
         
     def training_loss(self, training_step=0, **inputs):
         """
-        Compute training loss for model fine-tuning with CLUB-based mutual information minimization.
+        Compute training loss with VACE-E features and CLUB loss.
         
-        Implements the flow matching training objective with disentangled representation learning:
-        1. Sample random timestep
-        2. Add noise to clean data  
-        3. Predict the noise/flow direction with task and embodiment features
-        4. Compute MSE loss with proper weighting
-        5. Add CLUB loss to minimize mutual information between task and embodiment features
-        
-        Args:
-            training_step: Current training step (for CLUB estimator updates)
-            return_detailed_losses: If True, return dict with loss breakdown; if False, return scalar total_loss
-            **inputs: Training inputs including latents, noise, prompts, VACE-E features, etc.
-            
-        Returns:
-            If return_detailed_losses=True: Dict containing:
-                - 'total_loss': Combined loss for backpropagation
-                - 'flow_loss': Flow matching loss component  
-                - 'club_loss': CLUB mutual information loss component
-            If return_detailed_losses=False: Scalar tensor (total_loss) for training framework
+        This function handles:
+        1. Flow matching loss (standard diffusion training)
+        2. CLUB loss for task-embodiment mutual information estimation
+        3. Multi-GPU feature gathering for contrastive loss computation
         """
         timestep_id = torch.randint(0, self.scheduler.num_train_timesteps, (1,))
         timestep = self.scheduler.timesteps[timestep_id].to(dtype=self.torch_dtype, device=self.device)
         
+        # Add noise to latents for training
         inputs["latents"] = self.scheduler.add_noise(inputs["input_latents"], inputs["noise"], timestep)
         training_target = self.scheduler.training_target(inputs["input_latents"], inputs["noise"], timestep)
         
@@ -667,29 +654,25 @@ class WanVideoPipeline(BasePipeline):
                 else:
                     embodiment_reduced = embodiment_features
                 
-                # # Further reduce dimensions if still too large (limit to max 512 per feature)
-                # max_dim = 512
-                # if task_reduced.shape[-1] > max_dim:
-                #     # Simple linear projection to reduce dimension
-                #     if not hasattr(self, 'task_dim_reducer'):
-                #         self.task_dim_reducer = torch.nn.Linear(task_reduced.shape[-1], max_dim).to(device=self.device, dtype=self.torch_dtype)
-                #         print(f"Created task dimension reducer: {task_reduced.shape[-1]} -> {max_dim}")
-                #     task_reduced = self.task_dim_reducer(task_reduced)
-                    
-                # if embodiment_reduced.shape[-1] > max_dim:
-                #     # Simple linear projection to reduce dimension
-                #     if not hasattr(self, 'embodiment_dim_reducer'):
-                #         self.embodiment_dim_reducer = torch.nn.Linear(embodiment_reduced.shape[-1], max_dim).to(device=self.device, dtype=self.torch_dtype)
-                #         print(f"Created embodiment dimension reducer: {embodiment_reduced.shape[-1]} -> {max_dim}")
-                #     embodiment_reduced = self.embodiment_dim_reducer(embodiment_reduced)
+                # Gather features from all GPUs for contrastive loss computation
+                # This ensures each GPU has the full global batch
+                # Use accelerator.gather for feature collection
+                gathered_task_features = self.accelerator.gather(task_reduced)
+                gathered_embodiment_features = self.accelerator.gather(embodiment_reduced)
                 
-                # print(f"Reduced feature shapes: task={task_reduced.shape}, embodiment={embodiment_reduced.shape}")
+                print(f"Gathered feature shapes (accelerator): task={gathered_task_features.shape}, embodiment={gathered_embodiment_features.shape}")
+                
+                # Use gathered features for CLUB computation
+                task_flat = gathered_task_features.to(dtype=self.torch_dtype)
+                embodiment_flat = gathered_embodiment_features.to(dtype=self.torch_dtype)
+                        
+                print(f"Final features for CLUB: task_flat={task_flat.shape} {task_flat.dtype}, embodiment_flat={embodiment_flat.shape} {embodiment_flat.dtype}")
                 
                 # Initialize CLUB estimator if not already done
                 if self.club_estimator is None:
                     # Get dimensions from reduced features
-                    task_dim = task_reduced.shape[-1]
-                    embodiment_dim = embodiment_reduced.shape[-1]
+                    task_dim = task_flat.shape[-1]
+                    embodiment_dim = embodiment_flat.shape[-1]
                     hidden_size = min(256, max(task_dim, embodiment_dim))  # Conservative hidden size
                     
                     print(f"CLUB dimensions: task_dim={task_dim}, embodiment_dim={embodiment_dim}, hidden_size={hidden_size}")
@@ -697,12 +680,6 @@ class WanVideoPipeline(BasePipeline):
                     # Initialize CLUB optimizer
                     self.club_optimizer = torch.optim.Adam(self.club_estimator.parameters(), lr=getattr(self, 'club_lr', 1e-4))
                     print(f"🎯 Initialized CLUB estimator with dtype {self.torch_dtype} successfully!")
-                
-                # Use reduced features for CLUB computation (already 2D)
-                # Ensure features have the correct dtype for CLUB computation
-                task_flat = task_reduced.to(dtype=self.torch_dtype)
-                embodiment_flat = embodiment_reduced.to(dtype=self.torch_dtype)
-                print(f"Final features for CLUB: task_flat={task_flat.shape} {task_flat.dtype}, embodiment_flat={embodiment_flat.shape} {embodiment_flat.dtype}")
                 
                 # Phase 1: Train CLUB estimator to approximate q_θ(embodiment|task)
                 if training_step % self.club_update_freq == 0:
@@ -753,6 +730,16 @@ class WanVideoPipeline(BasePipeline):
         self.enable_club_loss = enable
         
         print(f"🎯 CLUB loss configured: lambda={lambda_weight}, update_freq={update_freq}, training_steps={training_steps}, lr={club_lr}, enabled={enable}")
+    
+    def set_accelerator(self, accelerator):
+        """
+        Set the accelerator instance for distributed training.
+        This allows the pipeline to access the accelerator for gathering features.
+        
+        Args:
+            accelerator: Accelerator instance from the training loop
+        """
+        self.accelerator = accelerator
     
     def train_club_estimator(self, task_features, embodiment_features):
         """

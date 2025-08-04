@@ -175,6 +175,15 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         self.training_step += 1
         
         return loss, log_loss
+    
+    def set_accelerator(self, accelerator):
+        """
+        Set the accelerator instance for the pipeline to enable distributed feature gathering.
+        
+        Args:
+            accelerator: Accelerator instance from the training loop
+        """
+        self.pipe.set_accelerator(accelerator)
 
 
 if __name__ == "__main__":
