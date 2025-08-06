@@ -1104,13 +1104,42 @@ class WanVideoPipeline(BasePipeline):
         # Initialize VACE-E model using DiT weights (no pre-trained VACE-E model available yet)
         if pipe.dit is not None and enable_vace_e:
             try:
-                pipe.vace_e = create_vace_model_from_dit(
-                    pipe.dit,
-                    vace_layers=vace_e_layers,
-                    enable_task_processing=vace_e_task_processing
-                )
-                # Ensure VACE-E model is on the correct device
-                pipe.vace_e = pipe.vace_e.to(device=device, dtype=torch_dtype)
+                # Check if we're in a distributed environment
+                import torch.distributed as dist
+                is_distributed = dist.is_initialized() if dist.is_available() else False
+                
+                if is_distributed:
+                    # In distributed training, only initialize on main process or with proper device placement
+                    local_rank = dist.get_rank()
+                    world_size = dist.get_world_size()
+                    
+                    # Use local rank for device placement in distributed training
+                    local_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+                    
+                    print(f"🔄 Distributed VACE-E initialization: rank {local_rank}/{world_size}, device {local_device}")
+                    
+                    # Create VACE-E model with local device placement
+                    pipe.vace_e = create_vace_model_from_dit(
+                        pipe.dit,
+                        vace_layers=vace_e_layers,
+                        enable_task_processing=vace_e_task_processing
+                    )
+                    # Move to local device for distributed training
+                    pipe.vace_e = pipe.vace_e.to(device=local_device, dtype=torch_dtype)
+                    
+                    # Synchronize across processes
+                    dist.barrier()
+                    
+                else:
+                    # Single GPU or non-distributed training
+                    pipe.vace_e = create_vace_model_from_dit(
+                        pipe.dit,
+                        vace_layers=vace_e_layers,
+                        enable_task_processing=vace_e_task_processing
+                    )
+                    # Ensure VACE-E model is on the correct device
+                    pipe.vace_e = pipe.vace_e.to(device=device, dtype=torch_dtype)
+                
                 print(f"✅ VACE-E model initialized with DiT weights")
                 print(f"   VACE-E layers: {vace_e_layers}")
                 print(f"   Task processing: {vace_e_task_processing}")
@@ -1122,11 +1151,12 @@ class WanVideoPipeline(BasePipeline):
                     feature_dim = pipe.dit.dim  # Main model dimension (e.g., 1536 for 1.3B model)
                     hidden_size = feature_dim * 2  # Hidden layer size for CLUB networks
                     
+                    club_device = local_device if is_distributed else device
                     pipe.club_estimator = CLUB(
                         x_dim=feature_dim,  # Task features dimension
                         y_dim=feature_dim,  # Embodiment features dimension  
                         hidden_size=hidden_size
-                    ).to(device=device, dtype=torch_dtype)
+                    ).to(device=club_device, dtype=torch_dtype)
                     
                     # Separate optimizer for CLUB estimator (typically higher learning rate)
                     pipe.club_optimizer = torch.optim.Adam(

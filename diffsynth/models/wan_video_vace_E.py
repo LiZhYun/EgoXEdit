@@ -1910,10 +1910,24 @@ def create_vace_model_from_dit(dit_model, vace_layers=None, enable_task_processi
         **dit_config
     )
     
-    # Move to same device as DiT
-    device = next(dit_model.parameters()).device
-    dtype = next(dit_model.parameters()).dtype
-    vace_model = vace_model.to(device=device, dtype=dtype)
+    # Check if we're in a distributed environment
+    import torch.distributed as dist
+    is_distributed = dist.is_initialized() if dist.is_available() else False
+    
+    if is_distributed:
+        # In distributed training, use local rank for device placement
+        local_rank = dist.get_rank()
+        local_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+        
+        # Move to local device for distributed training
+        vace_model = vace_model.to(device=local_device, dtype=dit_model.dtype)
+        print(f"  🔄 Distributed placement: device {local_device}, rank {local_rank}")
+    else:
+        # Single GPU or non-distributed training
+        device = next(dit_model.parameters()).device
+        dtype = next(dit_model.parameters()).dtype
+        vace_model = vace_model.to(device=device, dtype=dtype)
+        print(f"  📍 Single device placement: device {device}")
     
     # Initialize with DiT weights
     loaded_blocks = vace_model.load_dit_weights(dit_model)
