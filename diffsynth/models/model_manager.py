@@ -68,6 +68,18 @@ def load_model_from_single_file(state_dict, model_names, model_classes, model_re
         else:
             model_state_dict, extra_kwargs = state_dict_results, {}
         torch_dtype = torch.float32 if extra_kwargs.get("upcast_to_float32", False) else torch_dtype
+        
+        # Check if we're in a distributed environment
+        import torch.distributed as dist
+        is_distributed = dist.is_initialized() if dist.is_available() else False
+        
+        if is_distributed:
+            # In distributed training, use local rank for device placement
+            local_rank = dist.get_rank()
+            local_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+            print(f"    🔄 Distributed model loading: device {local_device}, rank {local_rank}")
+            device = local_device
+        
         with init_weights_on_device():
             model = model_class(**extra_kwargs)
         if hasattr(model, "eval"):
@@ -81,6 +93,18 @@ def load_model_from_single_file(state_dict, model_names, model_classes, model_re
 
 def load_model_from_huggingface_folder(file_path, model_names, model_classes, torch_dtype, device):
     loaded_model_names, loaded_models = [], []
+    
+    # Check if we're in a distributed environment
+    import torch.distributed as dist
+    is_distributed = dist.is_initialized() if dist.is_available() else False
+    
+    if is_distributed:
+        # In distributed training, use local rank for device placement
+        local_rank = dist.get_rank()
+        local_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+        print(f"    🔄 Distributed HuggingFace model loading: device {local_device}, rank {local_rank}")
+        device = local_device
+    
     for model_name, model_class in zip(model_names, model_classes):
         if torch_dtype in [torch.float32, torch.float16, torch.bfloat16]:
             model = model_class.from_pretrained(file_path, torch_dtype=torch_dtype).eval()
@@ -99,6 +123,18 @@ def load_model_from_huggingface_folder(file_path, model_names, model_classes, to
 
 def load_single_patch_model_from_single_file(state_dict, model_name, model_class, base_model, extra_kwargs, torch_dtype, device):
     print(f"    model_name: {model_name} model_class: {model_class.__name__} extra_kwargs: {extra_kwargs}")
+    
+    # Check if we're in a distributed environment
+    import torch.distributed as dist
+    is_distributed = dist.is_initialized() if dist.is_available() else False
+    
+    if is_distributed:
+        # In distributed training, use local rank for device placement
+        local_rank = dist.get_rank()
+        local_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+        print(f"    🔄 Distributed patch model loading: device {local_device}, rank {local_rank}")
+        device = local_device
+    
     base_state_dict = base_model.state_dict()
     base_model.to("cpu")
     del base_model

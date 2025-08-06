@@ -1033,18 +1033,11 @@ class WanVideoPipeline(BasePipeline):
         vace_e_task_processing: bool = True,
     ):
         """
-        Create WanVideoPipeline from pretrained models.
-        
-        This factory method handles:
-        1. Model downloading from repositories
-        2. Component initialization and loading
-        3. Tokenizer setup
-        4. Optional USP configuration
-        5. VACE-E initialization with DiT weights
+        Create a WanVideoPipeline instance with pre-trained models.
         
         Args:
-            torch_dtype: Computation data type
-            device: Target device
+            torch_dtype: Data type for model parameters
+            device: Device to load models on
             model_configs: List of model configurations to load
             tokenizer_config: Tokenizer configuration
             local_model_path: Local storage path for models
@@ -1064,6 +1057,11 @@ class WanVideoPipeline(BasePipeline):
             VACE-E model is created using create_vace_model_from_dit() and initialized
             with pretrained DiT weights since no pretrained VACE-E model exists yet.
         """
+        # Set memory optimization environment variables for distributed training
+        import os
+        if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        
         # Redirect model path
         if redirect_common_files:
             redirect_dict = {
