@@ -2039,16 +2039,16 @@ class WanVideoUnit_VACE_E(PipelineUnit):
         vace_e_object_ids, vace_e_text_mask, vace_e_motion_mask, vace_e_trajectory_mask,
         vace_e_embodiment_image_features, vace_e_scale
     ):
-        # Debug: Print shapes of all inputs
-        print(f"DEBUG VACE-E Unit:")
-        print(f"  Text features: {vace_e_text_features.shape if vace_e_text_features is not None else None}")
-        print(f"  Hand motion: {vace_e_hand_motion_sequence.shape if vace_e_hand_motion_sequence is not None else None}")
-        print(f"  Object trajectory: {vace_e_object_trajectory_sequence.shape if vace_e_object_trajectory_sequence is not None else None}")
-        print(f"  Object IDs: {vace_e_object_ids.shape if vace_e_object_ids is not None else None}")
-        print(f"  Text mask: {vace_e_text_mask.shape if vace_e_text_mask is not None else None}")
-        print(f"  Motion mask: {vace_e_motion_mask.shape if vace_e_motion_mask is not None else None}")
-        print(f"  Trajectory mask: {vace_e_trajectory_mask.shape if vace_e_trajectory_mask is not None else None}")
-        print(f"  Embodiment features: {vace_e_embodiment_image_features.shape if vace_e_embodiment_image_features is not None else None}")
+        # # Debug: Print shapes of all inputs
+        # print(f"DEBUG VACE-E Unit:")
+        # print(f"  Text features: {vace_e_text_features.shape if vace_e_text_features is not None else None}")
+        # print(f"  Hand motion: {vace_e_hand_motion_sequence.shape if vace_e_hand_motion_sequence is not None else None}")
+        # print(f"  Object trajectory: {vace_e_object_trajectory_sequence.shape if vace_e_object_trajectory_sequence is not None else None}")
+        # print(f"  Object IDs: {vace_e_object_ids.shape if vace_e_object_ids is not None else None}")
+        # print(f"  Text mask: {vace_e_text_mask.shape if vace_e_text_mask is not None else None}")
+        # print(f"  Motion mask: {vace_e_motion_mask.shape if vace_e_motion_mask is not None else None}")
+        # print(f"  Trajectory mask: {vace_e_trajectory_mask.shape if vace_e_trajectory_mask is not None else None}")
+        # print(f"  Embodiment features: {vace_e_embodiment_image_features.shape if vace_e_embodiment_image_features is not None else None}")
         
         # Check if any VACE-E features are provided
         has_task_features = (vace_e_text_features is not None or 

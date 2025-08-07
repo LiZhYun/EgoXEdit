@@ -149,18 +149,33 @@ class VideoDatasetE(torch.utils.data.Dataset):
         self.episodes = self._discover_episodes()
         print(f"✓ Found {len(self.episodes)} episodes across {len(set(ep['task_name'] for ep in self.episodes))} tasks")
         
-        # Validate episodes
+        # Validate episodes with detailed statistics
+        total_episodes = len(self.episodes)
         valid_episodes = []
+        filtered_count = 0
+        
         print("Validating episodes...")
         for episode in tqdm(self.episodes, desc="Validating"):
             if self._validate_episode(episode):
                 valid_episodes.append(episode)
+            else:
+                filtered_count += 1
         
         self.episodes = valid_episodes
-        print(f"✓ {len(self.episodes)} episodes passed validation")
+        
+        # Print detailed statistics
+        print(f"📊 Episode Validation Statistics:")
+        print(f"   Total episodes found: {total_episodes}")
+        print(f"   ✅ Valid episodes: {len(self.episodes)}")
+        print(f"   ❌ Filtered episodes: {filtered_count}")
+        if total_episodes > 0:
+            print(f"   📈 Filtering rate: {filtered_count / total_episodes * 100:.1f}%")
+            print(f"   📈 Retention rate: {len(self.episodes) / total_episodes * 100:.1f}%")
         
         if len(self.episodes) == 0:
-            raise ValueError(f"No valid episodes found in {base_path}")
+            raise ValueError(f"No valid episodes found in {base_path} after filtering! Check your data and validation criteria.")
+        elif len(self.episodes) < total_episodes * 0.5:
+            warnings.warn(f"More than 50% of episodes were filtered out! Only {len(self.episodes)}/{total_episodes} episodes remain.")
     
     def _discover_episodes(self):
         """Discover all episodes from the folder structure."""
@@ -196,29 +211,121 @@ class VideoDatasetE(torch.utils.data.Dataset):
         return episodes
     
     def _validate_episode(self, episode):
-        """Validate that an episode has required files."""
+        """Validate episode metadata and file existence with comprehensive checks."""
         episode_path = episode['episode_path']
         episode_name = episode['episode_name']
         
-        # Required files
-        required_files = [
-            f"{episode_name}.mp4",                     # Target video to generate
-            f"{episode_name}_hands_masked.mp4",        # VACE control video  
-            f"{episode_name}_hands_mask.mp4",          # VACE mask video
-        ]
+        # Check if episode directory exists
+        if not os.path.exists(episode_path):
+            print(f"❌ Episode {episode_name}: Directory does not exist: {episode_path}")
+            return False
         
-        # Check required files exist
-        missing_files = []
-        for required_file in required_files:
-            file_path = os.path.join(episode_path, required_file)
-            if not os.path.exists(file_path):
-                missing_files.append(required_file)
+        # Check if task name is valid
+        if not episode.get('task_name'):
+            print(f"❌ Episode {episode_name}: Missing task name")
+            return False
         
-        if missing_files:
-            if not self.enable_fallback:
+        # Check target video (required)
+        target_video_path = os.path.join(episode_path, f"{episode_name}.mp4")
+        if not os.path.exists(target_video_path):
+            print(f"❌ Episode {episode_name}: Target video not found: {target_video_path}")
+            return False
+        
+        # Check video file size and integrity
+        try:
+            file_size = os.path.getsize(target_video_path)
+            if file_size == 0:
+                print(f"❌ Episode {episode_name}: Target video file is empty")
                 return False
-            warnings.warn(f"Episode {episode_name} missing files: {missing_files}")
+            if file_size < 1024:  # Less than 1KB is suspicious
+                print(f"❌ Episode {episode_name}: Target video file is too small ({file_size} bytes)")
+                return False
+        except OSError:
+            print(f"❌ Episode {episode_name}: Cannot access target video file")
+            return False
         
+        # Check for corrupted video file by trying to read first frame
+        try:
+            import cv2
+            cap = cv2.VideoCapture(target_video_path)
+            if not cap.isOpened():
+                print(f"❌ Episode {episode_name}: Cannot open video file with OpenCV")
+                return False
+            
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                print(f"❌ Episode {episode_name}: Cannot read first frame from video")
+                return False
+            
+            # Check frame dimensions
+            if frame.shape[0] == 0 or frame.shape[1] == 0:
+                print(f"❌ Episode {episode_name}: Video has invalid frame dimensions")
+                return False
+            
+            cap.release()
+        except Exception as e:
+            print(f"❌ Episode {episode_name}: Error checking video file: {e}")
+            return False
+        
+        # Check optional VACE files if they exist
+        vace_video_path = os.path.join(episode_path, f"{episode_name}_hands_masked.mp4")
+        if os.path.exists(vace_video_path):
+            try:
+                file_size = os.path.getsize(vace_video_path)
+                if file_size == 0:
+                    print(f"❌ Episode {episode_name}: VACE video file is empty")
+                    return False
+                if file_size < 1024:
+                    print(f"❌ Episode {episode_name}: VACE video file is too small ({file_size} bytes)")
+                    return False
+            except OSError:
+                print(f"❌ Episode {episode_name}: Cannot access VACE video file")
+                return False
+        
+        vace_mask_path = os.path.join(episode_path, f"{episode_name}_hands_mask.mp4")
+        if os.path.exists(vace_mask_path):
+            try:
+                file_size = os.path.getsize(vace_mask_path)
+                if file_size == 0:
+                    print(f"❌ Episode {episode_name}: VACE mask file is empty")
+                    return False
+                if file_size < 1024:
+                    print(f"❌ Episode {episode_name}: VACE mask file is too small ({file_size} bytes)")
+                    return False
+            except OSError:
+                print(f"❌ Episode {episode_name}: Cannot access VACE mask file")
+                return False
+        
+        # Check HDF5 files if they exist
+        hand_hdf5_path = os.path.join(episode_path, f"{episode_name}_hand_trajectories.hdf5")
+        if os.path.exists(hand_hdf5_path):
+            try:
+                file_size = os.path.getsize(hand_hdf5_path)
+                if file_size == 0:
+                    print(f"❌ Episode {episode_name}: Hand motion HDF5 file is empty")
+                    return False
+                if file_size < 100:  # HDF5 files should be at least 100 bytes
+                    print(f"❌ Episode {episode_name}: Hand motion HDF5 file is too small ({file_size} bytes)")
+                    return False
+            except OSError:
+                print(f"❌ Episode {episode_name}: Cannot access hand motion HDF5 file")
+                return False
+        
+        obj_hdf5_path = os.path.join(episode_path, f"{episode_name}_object_trajectories.hdf5")
+        if os.path.exists(obj_hdf5_path):
+            try:
+                file_size = os.path.getsize(obj_hdf5_path)
+                if file_size == 0:
+                    print(f"❌ Episode {episode_name}: Object trajectory HDF5 file is empty")
+                    return False
+                if file_size < 100:  # HDF5 files should be at least 100 bytes
+                    print(f"❌ Episode {episode_name}: Object trajectory HDF5 file is too small ({file_size} bytes)")
+                    return False
+            except OSError:
+                print(f"❌ Episode {episode_name}: Cannot access object trajectory HDF5 file")
+                return False
+        
+        print(f"✅ Episode {episode_name}: Passed file validation")
         return True
     
     def generate_task_prompt(self, task_name, full_task_name=None):
@@ -435,8 +542,167 @@ class VideoDatasetE(torch.utils.data.Dataset):
                 return os.path.join(episode_path, file_name)
         return None
     
+    def _validate_tensor_shape(self, tensor, expected_shape, tensor_name):
+        """Validate tensor shape and return True if valid, False otherwise."""
+        if tensor is None:
+            return True  # None is acceptable for optional features
+        
+        if not isinstance(tensor, torch.Tensor):
+            print(f"❌ {tensor_name}: Not a tensor, got {type(tensor)}")
+            return False
+        
+        if len(tensor.shape) != len(expected_shape):
+            print(f"❌ {tensor_name}: Wrong number of dimensions, expected {len(expected_shape)}, got {len(tensor.shape)}")
+            return False
+        
+        for i, (expected, actual) in enumerate(zip(expected_shape, tensor.shape)):
+            if expected is not None and actual != expected:
+                print(f"❌ {tensor_name}: Dimension {i} mismatch, expected {expected}, got {actual}")
+                return False
+        
+        # Check for NaN or infinite values
+        if torch.isnan(tensor).any() or torch.isinf(tensor).any():
+            print(f"❌ {tensor_name}: Contains NaN or infinite values")
+            return False
+        
+        return True
+    
+    def _validate_video_data(self, video, episode_name):
+        """Validate video data and return True if valid."""
+        if video is None:
+            print(f"❌ Episode {episode_name}: Missing video data")
+            return False
+        
+        if not isinstance(video, list) or len(video) == 0:
+            print(f"❌ Episode {episode_name}: Invalid video format")
+            return False
+        
+        # Check if all frames are valid
+        for i, frame in enumerate(video):
+            if frame is None:
+                print(f"❌ Episode {episode_name}: Frame {i} is None")
+                return False
+            if not hasattr(frame, 'size'):
+                print(f"❌ Episode {episode_name}: Frame {i} is not a PIL Image")
+                return False
+        
+        return True
+    
+    def _validate_hand_motion(self, hand_motion, episode_name):
+        """Validate hand motion data and return True if valid."""
+        if hand_motion is None:
+            return True  # Hand motion is optional
+        
+        # Check if it's a tensor
+        if not isinstance(hand_motion, torch.Tensor):
+            print(f"❌ Episode {episode_name}: Hand motion is not a tensor")
+            return False
+        
+        # Check dimensions: should be [seq_len, feature_dim] or [batch, seq_len, feature_dim]
+        if len(hand_motion.shape) not in [2, 3]:
+            print(f"❌ Episode {episode_name}: Hand motion has wrong dimensions: {hand_motion.shape}")
+            return False
+        
+        # Check feature dimension (should be 10 for single hand or 20 for dual hand)
+        feature_dim = hand_motion.shape[-1]
+        if feature_dim not in [10, 20]:
+            print(f"❌ Episode {episode_name}: Hand motion has wrong feature dimension: {feature_dim}")
+            return False
+        
+        # Check for NaN or infinite values
+        if torch.isnan(hand_motion).any() or torch.isinf(hand_motion).any():
+            print(f"❌ Episode {episode_name}: Hand motion contains NaN or infinite values")
+            return False
+        
+        return True
+    
+    def _validate_object_trajectory(self, trajectory, object_ids, episode_name):
+        """Validate object trajectory data and return True if valid."""
+        if trajectory is None and object_ids is None:
+            return True  # Both are optional
+        
+        # If one is provided, both should be provided
+        if (trajectory is None) != (object_ids is None):
+            print(f"❌ Episode {episode_name}: Inconsistent object data - trajectory: {trajectory is not None}, ids: {object_ids is not None}")
+            return False
+        
+        if trajectory is not None:
+            if not isinstance(trajectory, torch.Tensor):
+                print(f"❌ Episode {episode_name}: Object trajectory is not a tensor")
+                return False
+            
+            # Check dimensions: should be [seq_len, num_objects, 9] or [batch, seq_len, num_objects, 9]
+            if len(trajectory.shape) not in [3, 4]:
+                print(f"❌ Episode {episode_name}: Object trajectory has wrong dimensions: {trajectory.shape}")
+                return False
+            
+            # Check feature dimension (should be 9 for 3D position + 6D rotation)
+            feature_dim = trajectory.shape[-1]
+            if feature_dim != 9:
+                print(f"❌ Episode {episode_name}: Object trajectory has wrong feature dimension: {feature_dim}")
+                return False
+            
+            # Check for NaN or infinite values
+            if torch.isnan(trajectory).any() or torch.isinf(trajectory).any():
+                print(f"❌ Episode {episode_name}: Object trajectory contains NaN or infinite values")
+                return False
+        
+        if object_ids is not None:
+            if not isinstance(object_ids, torch.Tensor):
+                print(f"❌ Episode {episode_name}: Object IDs is not a tensor")
+                return False
+            
+            # Check dimensions: should be [num_objects] or [batch, num_objects]
+            if len(object_ids.shape) not in [1, 2]:
+                print(f"❌ Episode {episode_name}: Object IDs has wrong dimensions: {object_ids.shape}")
+                return False
+        
+        return True
+    
+    def _validate_embodiment_image(self, image, episode_name):
+        """Validate embodiment image data and return True if valid."""
+        if image is None:
+            return True  # Embodiment image is optional
+        
+        if not hasattr(image, 'size'):
+            print(f"❌ Episode {episode_name}: Embodiment image is not a PIL Image")
+            return False
+        
+        return True
+    
+    def _validate_episode_data(self, data, episode_name):
+        """Comprehensive validation of episode data."""
+        is_valid = True
+        
+        # Validate video data (required)
+        if not self._validate_video_data(data.get('video'), episode_name):
+            is_valid = False
+        
+        # Validate hand motion (optional)
+        if not self._validate_hand_motion(data.get('hand_motion_sequence'), episode_name):
+            is_valid = False
+        
+        # Validate object trajectory (optional)
+        if not self._validate_object_trajectory(
+            data.get('object_trajectory_sequence'), 
+            data.get('object_ids'), 
+            episode_name
+        ):
+            is_valid = False
+        
+        # Validate embodiment image (optional)
+        if not self._validate_embodiment_image(data.get('embodiment_image'), episode_name):
+            is_valid = False
+        
+        # Validate prompt
+        if not data.get('prompt') or not isinstance(data['prompt'], str):
+            print(f"❌ Episode {episode_name}: Missing or invalid prompt")
+            is_valid = False
+        
+        return is_valid
+    
     def __getitem__(self, data_id):
-        """Load episode data with all modalities."""
+        """Load episode data with all modalities and validate."""
         episode = self.episodes[data_id % len(self.episodes)]
         episode_path = episode['episode_path']
         episode_name = episode['episode_name']
@@ -501,12 +767,12 @@ class VideoDatasetE(torch.utils.data.Dataset):
             data['embodiment_image'] = None
             data['vace_reference_image'] = None
         
-        # Validate critical data
-        if data['video'] is None:
-            if not self.enable_fallback:
-                return None
-            warnings.warn(f"Episode {episode_name} missing critical video data")
+        # Comprehensive validation of episode data
+        if not self._validate_episode_data(data, episode_name):
+            print(f"❌ Episode {episode_name}: Failed validation, skipping")
+            return None
         
+        print(f"✅ Episode {episode_name}: Passed validation")
         return data
     
     def __len__(self):
