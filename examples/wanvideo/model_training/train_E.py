@@ -74,6 +74,8 @@ class WanTrainingModuleE(DiffusionTrainingModule):
     def forward_preprocess(self, data):
         # Determine batch size from video tensor
         batch_size = data["video"].shape[0] if "video" in data else 1
+        print(f"DEBUG: Determined batch size: {batch_size}")
+        print(f"DEBUG: Video shape: {data['video'].shape if 'video' in data else 'None'}")
         
         # CFG-sensitive parameters
         inputs_posi = {"prompt": data["prompt"]}

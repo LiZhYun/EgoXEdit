@@ -610,7 +610,27 @@ class WanTaskFeatureFusion(torch.nn.Module):
         if len(fused_features) == 1:
             task_features = fused_features[0]
         else:
-            task_features = torch.cat(fused_features, dim=1)  # [batch_size, total_seq_len, task_dim]
+            # Debug: Print shapes of all features
+            print(f"DEBUG: Number of fused features: {len(fused_features)}")
+            for i, feature in enumerate(fused_features):
+                print(f"DEBUG: Feature {i} shape: {feature.shape}")
+            
+            # Ensure all tensors have the same batch size and feature dimension
+            batch_size = fused_features[0].shape[0]
+            feature_dim = fused_features[0].shape[-1]
+            
+            # Validate and pad tensors if needed
+            validated_features = []
+            for i, feature in enumerate(fused_features):
+                if feature.shape[0] != batch_size:
+                    raise ValueError(f"Feature {i} has batch size {feature.shape[0]}, expected {batch_size}")
+                
+                if feature.shape[-1] != feature_dim:
+                    raise ValueError(f"Feature {i} has feature dimension {feature.shape[-1]}, expected {feature_dim}")
+                
+                validated_features.append(feature)
+            
+            task_features = torch.cat(validated_features, dim=1)  # [batch_size, total_seq_len, task_dim]
         
         # Apply cross-attention for inter-modality fusion
         # Use task_features as query, key, and value for self-attention across modalities
