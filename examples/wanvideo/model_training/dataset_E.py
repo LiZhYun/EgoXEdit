@@ -484,8 +484,12 @@ class VideoDatasetE(torch.utils.data.Dataset):
                     warnings.warn(f"No recognized hand motion data in {hdf5_path}")
                     return None
                 
-                # Use natural sequence length - no padding needed!
-                # Model handles variable lengths with attention masks
+                # Validate the hand motion data
+                if np.isnan(hand_motion).any() or np.isinf(hand_motion).any():
+                    print(f"⚠️ Hand motion data contains NaN or infinite values. Replacing with zeros.")
+                    hand_motion = np.nan_to_num(hand_motion, nan=0.0, posinf=0.0, neginf=0.0)
+                
+                print(f"✅ Loaded hand motion with shape: {hand_motion.shape}")
                 return torch.from_numpy(hand_motion).to(torch.bfloat16)
                 
         except Exception as e:
@@ -493,7 +497,7 @@ class VideoDatasetE(torch.utils.data.Dataset):
             return None
     
     def load_object_trajectory_from_hdf5(self, hdf5_path):
-        """Load object trajectory sequence from HDF5."""
+        """Load object trajectory sequence from HDF5 with proper padding."""
         try:
             with h5py.File(hdf5_path, 'r') as f:
                 # Get all object groups
@@ -504,7 +508,9 @@ class VideoDatasetE(torch.utils.data.Dataset):
                 
                 all_object_trajectories = []
                 object_ids = []
+                trajectory_lengths = []
                 
+                # First pass: collect all trajectories and their lengths
                 for obj_group_name in sorted(object_groups):
                     obj_group = f[obj_group_name]
                     obj_id = obj_group.attrs.get('object_id', len(object_ids))
@@ -517,14 +523,51 @@ class VideoDatasetE(torch.utils.data.Dataset):
                         obj_trajectory = np.concatenate([positions, rotations_6d], axis=1)  # [frames, 9]
                         all_object_trajectories.append(obj_trajectory)
                         object_ids.append(obj_id)
+                        trajectory_lengths.append(obj_trajectory.shape[0])
+                        print(f"   Object {obj_id}: trajectory shape {obj_trajectory.shape}")
                 
                 if not all_object_trajectories:
                     return None, None
                 
-                # Use natural sequence lengths - no padding needed!
-                # Stack: [seq_len, num_objects, 9] where seq_len varies naturally
-                trajectories_array = np.stack(all_object_trajectories, axis=1) if all_object_trajectories else None
-                object_ids_array = np.array(object_ids) if object_ids else None
+                # Find the maximum sequence length for padding
+                max_seq_len = max(trajectory_lengths)
+                min_seq_len = min(trajectory_lengths)
+                
+                if max_seq_len != min_seq_len:
+                    print(f"⚠️ Object trajectories have different lengths: min={min_seq_len}, max={max_seq_len}. Padding to max length.")
+                
+                # Pad all trajectories to the same length
+                padded_trajectories = []
+                for i, trajectory in enumerate(all_object_trajectories):
+                    current_len = trajectory.shape[0]
+                    
+                    if current_len < max_seq_len:
+                        # Pad with the last frame (repeat the last frame)
+                        last_frame = trajectory[-1:].copy()  # [1, 9]
+                        padding_frames = max_seq_len - current_len
+                        padding = np.tile(last_frame, (padding_frames, 1))  # [padding_frames, 9]
+                        padded_trajectory = np.concatenate([trajectory, padding], axis=0)  # [max_seq_len, 9]
+                    else:
+                        padded_trajectory = trajectory
+                    
+                    padded_trajectories.append(padded_trajectory)
+                
+                # Stack all padded trajectories: [seq_len, num_objects, 9]
+                trajectories_array = np.stack(padded_trajectories, axis=1)
+                object_ids_array = np.array(object_ids)
+                
+                # Check if we have too many objects
+                if len(object_ids) > self.max_objects:
+                    print(f"⚠️ Too many objects ({len(object_ids)} > {self.max_objects}). Truncating to first {self.max_objects} objects.")
+                    trajectories_array = trajectories_array[:, :self.max_objects, :]  # [seq_len, max_objects, 9]
+                    object_ids_array = object_ids_array[:self.max_objects]  # [max_objects]
+                
+                print(f"✅ Loaded {len(object_ids_array)} objects with trajectory shape: {trajectories_array.shape}")
+                
+                # Validate the trajectory data
+                if np.isnan(trajectories_array).any() or np.isinf(trajectories_array).any():
+                    print(f"⚠️ Trajectory data contains NaN or infinite values. Replacing with zeros.")
+                    trajectories_array = np.nan_to_num(trajectories_array, nan=0.0, posinf=0.0, neginf=0.0)
                 
                 return (
                     torch.from_numpy(trajectories_array).to(torch.bfloat16) if trajectories_array is not None else None,
@@ -783,3 +826,47 @@ class VideoDatasetE(torch.utils.data.Dataset):
 def create_training_dataset(args):
     """Factory function to create VideoDatasetE for training."""
     return VideoDatasetE(args=args) 
+
+
+# test load_object_trajectory_from_hdf5
+if __name__ == "__main__":
+    from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, wan_parser, enable_club_training_defaults
+    # test load_object_trajectory_from_hdf5
+    # Use the same argument parser as the original, but add VACE-E specific arguments
+    parser = wan_parser()
+    
+    # Add VACE-E specific arguments
+    parser.add_argument("--enable_vace_e", action="store_true", default=True, help="Enable VACE-E task-embodiment fusion")
+    parser.add_argument("--vace_e_layers", type=str, default="0,5,10,15,20,25", help="Comma-separated DiT layer indices for VACE-E hints")
+    parser.add_argument("--vace_e_task_processing", action="store_true", default=True, help="Enable VACE-E task feature processing")
+    
+    # Dataset-specific arguments
+    parser.add_argument("--task_metadata_path", type=str, default="/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json", help="Path to task metadata JSON")
+    parser.add_argument("--max_hand_motion_length", type=int, default=512, help="Maximum hand motion sequence length")
+    parser.add_argument("--max_object_trajectory_length", type=int, default=512, help="Maximum object trajectory sequence length")
+    parser.add_argument("--max_objects", type=int, default=10, help="Maximum number of objects per episode")
+    parser.add_argument("--fallback_to_video_only", action="store_true", help="Fall back to video-only training when robot data unavailable")
+    
+    # CLUB loss arguments
+    parser.add_argument("--club_lambda", type=float, default=1.0, help="Weight for CLUB loss in total loss")
+    parser.add_argument("--club_update_freq", type=int, default=1, help="Update CLUB estimator every N training steps")
+    parser.add_argument("--club_training_steps", type=int, default=5, help="Number of CLUB training steps per update")
+    parser.add_argument("--club_lr", type=float, default=1e-3, help="Learning rate for CLUB optimizer")
+    parser.add_argument("--enable_club_loss", action="store_true", default=True, help="Enable CLUB loss for mutual information minimization")
+    parser.add_argument("--disable_club_loss", action="store_true", help="Disable CLUB loss (overrides enable_club_loss)")
+    
+    args = parser.parse_args()
+    
+    # Enable appropriate defaults for CLUB training
+    args = enable_club_training_defaults(args)
+    
+    # Parse VACE-E layers
+    vace_e_layers = tuple(map(int, args.vace_e_layers.split(","))) if args.vace_e_layers else (0, 5, 10, 15, 20, 25)
+    
+    # Create dataset with VACE-E support
+    dataset = create_training_dataset(args)
+    data = dataset[0]
+    print(data)
+    obj_traj, obj_ids = dataset.load_object_trajectory_from_hdf5("/home/zhiyuan/Code/small_dataset/104-lars-grasping_2024-11-08_15-23-40/episode_23/episode_23_object_trajectories.hdf5")
+    print(obj_traj.shape)
+    print(obj_ids)
