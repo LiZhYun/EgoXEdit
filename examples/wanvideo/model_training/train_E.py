@@ -56,7 +56,18 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         self.pipe.scheduler.set_timesteps(1000, training=True)
         
         # Freeze untrainable models (include vace_e in potential trainable models)
-        self.pipe.freeze_except([] if trainable_models is None else trainable_models.split(","))
+        # Default to training dit and vace_e for VACE-E training
+        if trainable_models is None:
+            if enable_vace_e:
+                trainable_models = "dit,vace_e"  # Train both DiT and VACE-E for task-embodiment fusion
+            else:
+                trainable_models = "dit"  # Default to training DiT only
+                
+        print(f"🔧 Training Configuration:")
+        print(f"   Trainable models: {trainable_models}")
+        print(f"   VACE-E enabled: {enable_vace_e}")
+        
+        self.pipe.freeze_except(trainable_models.split(","))
         
         # Add LoRA to the base models (supports vace_e)
         if lora_base_model is not None:
@@ -71,6 +82,23 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.use_gradient_checkpointing_offload = use_gradient_checkpointing_offload
         self.extra_inputs = extra_inputs.split(",") if extra_inputs is not None else []
+        
+        # Debug: Show trainable parameters after configuration
+        trainable_params = list(self.trainable_modules())
+        param_count = sum(p.numel() for p in trainable_params)
+        print(f"💡 Trainable Parameters:")
+        print(f"   Total parameters: {param_count:,}")
+        print(f"   Number of parameter tensors: {len(trainable_params)}")
+        
+        if len(trainable_params) == 0:
+            print("❌ ERROR: No trainable parameters found!")
+            print("   Available models in pipeline:")
+            for name in dir(self.pipe):
+                if not name.startswith('_') and hasattr(getattr(self.pipe, name), 'parameters'):
+                    model = getattr(self.pipe, name)
+                    if hasattr(model, 'parameters'):
+                        total_params = sum(p.numel() for p in model.parameters())
+                        print(f"     {name}: {total_params:,} parameters")
         
         # Training step counter for CLUB loss
         self.training_step = 0
@@ -232,6 +260,13 @@ if __name__ == "__main__":
     # Enable appropriate defaults for CLUB training
     args = enable_club_training_defaults(args)
     
+    # Debug: Show key training arguments
+    print(f"🔍 Training Arguments:")
+    print(f"   trainable_models: {args.trainable_models}")
+    print(f"   lora_base_model: {args.lora_base_model}")
+    print(f"   enable_vace_e: {args.enable_vace_e}")
+    print(f"   vace_e_task_processing: {args.vace_e_task_processing}")
+    
     # Parse VACE-E layers
     vace_e_layers = tuple(map(int, args.vace_e_layers.split(","))) if args.vace_e_layers else (0, 5, 10, 15, 20, 25)
     
@@ -255,6 +290,18 @@ if __name__ == "__main__":
     
     # Set device on model for balanced loading
     model._device = device
+    
+    # Verify we have trainable parameters before creating optimizer
+    trainable_params = list(model.trainable_modules())
+    if len(trainable_params) == 0:
+        print("❌ FATAL ERROR: No trainable parameters found!")
+        print("   Check your --trainable_models argument.")
+        print("   For VACE-E training, use: --trainable_models 'dit,vace_e'")
+        print("   For standard training, use: --trainable_models 'dit'")
+        exit(1)
+    else:
+        param_count = sum(p.numel() for p in trainable_params)
+        print(f"✅ Found {param_count:,} trainable parameters across {len(trainable_params)} tensors")
     
     # Configure CLUB loss for mutual information minimization
     enable_club = args.enable_club_loss and not args.disable_club_loss
