@@ -606,6 +606,7 @@ def launch_training_task(
     use_video_collate: bool = False,
     video_min_value: float = -1,
     video_max_value: float = 1,
+    accelerator=None,  # Optional: use existing accelerator for balanced GPU usage
 ):
     # Choose appropriate collate function
     collate_fn = (lambda batch: video_collate_fn(batch, min_value=video_min_value, max_value=video_max_value)) if use_video_collate else (lambda x: x[0])
@@ -618,15 +619,18 @@ def launch_training_task(
         collate_fn=collate_fn,
         drop_last=True  # Drop last incomplete batch for consistent CLUB training
     )
-    # Configure DDP to handle unused parameters (e.g., VACE-E components that may not always be used)
-    accelerator = Accelerator(
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        # kwargs_handlers=[
-        #     # This ensures DDP can handle parameters that don't receive gradients
-        #     # Common when some model components are conditionally used
-        #     DistributedDataParallelKwargs(find_unused_parameters=True)
-        # ]
-    )
+    
+    # Use provided accelerator or create a new one
+    if accelerator is None:
+        # Configure DDP to handle unused parameters (e.g., VACE-E components that may not always be used)
+        accelerator = Accelerator(
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            # kwargs_handlers=[
+            #     # This ensures DDP can handle parameters that don't receive gradients
+            #     # Common when some model components are conditionally used
+            #     DistributedDataParallelKwargs(find_unused_parameters=True)
+            # ]
+        )
     
     # Set accelerator instance on model BEFORE preparation for distributed feature gathering
     if hasattr(model, 'set_accelerator'):

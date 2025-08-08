@@ -2,6 +2,7 @@ import torch, os, json
 from diffsynth.pipelines.wan_video_new_E import WanVideoPipeline, ModelConfig
 from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, wan_parser, enable_club_training_defaults
 from dataset_E import VideoDatasetE, create_training_dataset
+from accelerate import Accelerator
 import warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -37,10 +38,13 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         #     offload_device="cpu"
         # ))
         
+        # Get device from accelerator if available, otherwise use cuda
+        device = getattr(self, '_device', 'cuda')
+        
         # Initialize VACE-E enhanced pipeline
         self.pipe = WanVideoPipeline.from_pretrained(
             torch_dtype=torch.bfloat16, 
-            device="cuda", 
+            device=device, 
             model_configs=model_configs,
             # VACE-E configuration
             enable_vace_e=enable_vace_e,
@@ -214,6 +218,17 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # Initialize Accelerator first so each process only sees its own GPU
+    # This prevents memory imbalance where everything loads on GPU 0
+    print("🚀 Initializing Accelerator for balanced GPU memory usage...")
+    accelerator = Accelerator(
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+    )
+    
+    # Set device based on accelerator's assignment
+    device = accelerator.device
+    print(f"📍 Process {accelerator.process_index} assigned to device: {device}")
+    
     # Enable appropriate defaults for CLUB training
     args = enable_club_training_defaults(args)
     
@@ -222,6 +237,7 @@ if __name__ == "__main__":
     
     # Create dataset with VACE-E support
     dataset = create_training_dataset(args)
+    # Create model with assigned device
     model = WanTrainingModuleE(
         model_paths=args.model_paths,
         model_id_with_origin_paths=args.model_id_with_origin_paths,
@@ -236,6 +252,9 @@ if __name__ == "__main__":
         vace_e_layers=vace_e_layers,
         vace_e_task_processing=args.vace_e_task_processing,
     )
+    
+    # Set device on model for balanced loading
+    model._device = device
     
     # Configure CLUB loss for mutual information minimization
     enable_club = args.enable_club_loss and not args.disable_club_loss
@@ -272,4 +291,5 @@ if __name__ == "__main__":
         use_video_collate=args.use_video_collate,
         video_min_value=args.video_min_value,
         video_max_value=args.video_max_value,
+        accelerator=accelerator,  # Pass the early-initialized accelerator
     )
