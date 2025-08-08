@@ -281,6 +281,9 @@ class VideoDatasetE(torch.utils.data.Dataset):
             except OSError:
                 print(f"❌ Episode {episode_name}: Cannot access VACE video file")
                 return False
+        else:
+            print(f"❌ Episode {episode_name}: VACE video file not found: {vace_video_path}")
+            return False
         
         vace_mask_path = os.path.join(episode_path, f"{episode_name}_hands_mask.mp4")
         if os.path.exists(vace_mask_path):
@@ -295,6 +298,9 @@ class VideoDatasetE(torch.utils.data.Dataset):
             except OSError:
                 print(f"❌ Episode {episode_name}: Cannot access VACE mask file")
                 return False
+        else:
+            print(f"❌ Episode {episode_name}: VACE mask file not found: {vace_mask_path}")
+            return False
         
         # Check HDF5 files if they exist
         hand_hdf5_path = os.path.join(episode_path, f"{episode_name}_hand_trajectories.hdf5")
@@ -310,6 +316,9 @@ class VideoDatasetE(torch.utils.data.Dataset):
             except OSError:
                 print(f"❌ Episode {episode_name}: Cannot access hand motion HDF5 file")
                 return False
+        else:
+            print(f"❌ Episode {episode_name}: Hand motion HDF5 file not found: {hand_hdf5_path}")
+            return False
         
         obj_hdf5_path = os.path.join(episode_path, f"{episode_name}_object_trajectories.hdf5")
         if os.path.exists(obj_hdf5_path):
@@ -324,6 +333,9 @@ class VideoDatasetE(torch.utils.data.Dataset):
             except OSError:
                 print(f"❌ Episode {episode_name}: Cannot access object trajectory HDF5 file")
                 return False
+        else:
+            print(f"❌ Episode {episode_name}: Object trajectory HDF5 file not found: {obj_hdf5_path}")
+            return False
         
         print(f"✅ Episode {episode_name}: Passed file validation")
         return True

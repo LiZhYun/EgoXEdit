@@ -610,11 +610,23 @@ class WanVideoPipeline(BasePipeline):
              inputs["vace_e_context"].get("embodiment_image_features") is not None)
         )
         
+        # Ensure all ranks have consistent CLUB loss computation behavior
+        # Convert to tensor and synchronize across all ranks
+        if hasattr(self, 'accelerator') and self.accelerator is not None:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                # Create a tensor to hold the boolean value and synchronize it
+                has_features_tensor = torch.tensor(int(has_vace_e_features), device=self.device)
+                # Use allreduce with MAX operation to ensure if any rank has features, all use the same logic
+                dist.all_reduce(has_features_tensor, op=dist.ReduceOp.MAX)
+                has_vace_e_features = bool(has_features_tensor.item())
+        
         # Temporarily modify VACE-E context to request intermediate features if available
         original_vace_e_context = None
         if has_vace_e_features:
-            original_vace_e_context = inputs["vace_e_context"].copy()
-            inputs["vace_e_context"]["return_intermediate_features"] = True
+            original_vace_e_context = inputs["vace_e_context"].copy() if inputs.get("vace_e_context") is not None else {}
+            if inputs.get("vace_e_context") is not None:
+                inputs["vace_e_context"]["return_intermediate_features"] = True
         
         # Get model prediction (potentially with intermediate features)
         noise_pred = self.model_fn(**inputs, timestep=timestep)
@@ -631,13 +643,27 @@ class WanVideoPipeline(BasePipeline):
         club_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype)
         
         # Compute CLUB loss if VACE-E features are available and CLUB loss is enabled
-        if (self.enable_club_loss and 
+        # Ensure all ranks take the same code path
+        should_compute_club = (
+            self.enable_club_loss and 
             has_vace_e_features and 
             '_current_task_features' in globals() and 
-            '_current_embodiment_features' in globals()):
-            
-            task_features = globals()['_current_task_features']
-            embodiment_features = globals()['_current_embodiment_features']
+            '_current_embodiment_features' in globals()
+        )
+        
+        # Synchronize CLUB computation decision across all ranks
+        if hasattr(self, 'accelerator') and self.accelerator is not None:
+            import torch.distributed as dist
+            if dist.is_initialized():
+                club_tensor = torch.tensor(int(should_compute_club), device=self.device)
+                # Use MAX operation so that if any rank can compute CLUB, all ranks attempt it
+                dist.all_reduce(club_tensor, op=dist.ReduceOp.MAX)
+                should_compute_club = bool(club_tensor.item())
+        
+        if should_compute_club:
+            # Get features from globals, with fallback to prevent rank mismatch
+            task_features = globals().get('_current_task_features', None)
+            embodiment_features = globals().get('_current_embodiment_features', None)
             
             if task_features is not None and embodiment_features is not None:
                 # Reduce feature dimensions to prevent memory issues
@@ -700,6 +726,12 @@ class WanVideoPipeline(BasePipeline):
                     del globals()['_current_task_features']
                 if '_current_embodiment_features' in globals():
                     del globals()['_current_embodiment_features']
+        
+        # Ensure all ranks clean up global variables (in case some ranks didn't enter the CLUB block)
+        if '_current_task_features' in globals():
+            del globals()['_current_task_features']
+        if '_current_embodiment_features' in globals():
+            del globals()['_current_embodiment_features']
         
         # Combine losses
         total_loss = flow_loss + club_loss
