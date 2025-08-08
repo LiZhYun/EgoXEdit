@@ -639,8 +639,8 @@ class WanVideoPipeline(BasePipeline):
         flow_loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
         flow_loss = flow_loss * self.scheduler.training_weight(timestep)
         
-        # Initialize CLUB loss
-        club_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype)
+        # Initialize CLUB loss with gradients enabled
+        club_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
         
         # Compute CLUB loss if VACE-E features are available and CLUB loss is enabled
         # Ensure all ranks take the same code path
@@ -664,6 +664,13 @@ class WanVideoPipeline(BasePipeline):
             # Get features from globals, with fallback to prevent rank mismatch
             task_features = globals().get('_current_task_features', None)
             embodiment_features = globals().get('_current_embodiment_features', None)
+            
+            # Debug: Check if features exist and have gradients
+            print(f"🔍 CLUB Debug - Features found: task={task_features is not None}, embodiment={embodiment_features is not None}")
+            if task_features is not None:
+                print(f"🔍 Task features: shape={task_features.shape}, requires_grad={task_features.requires_grad}, grad_fn={task_features.grad_fn}")
+            if embodiment_features is not None:
+                print(f"🔍 Embodiment features: shape={embodiment_features.shape}, requires_grad={embodiment_features.requires_grad}, grad_fn={embodiment_features.grad_fn}")
             
             if task_features is not None and embodiment_features is not None:
                 # Reduce feature dimensions to prevent memory issues
@@ -713,13 +720,24 @@ class WanVideoPipeline(BasePipeline):
                     # Note: CLUB training loss is for monitoring only, not included in main loss
                 
                 # Phase 2: Compute MI upper bound using trained CLUB estimator
-                with torch.no_grad():
-                    self.club_estimator.eval()
-                    mi_upper_bound = self.club_estimator(task_flat, embodiment_flat)
-                    self.club_estimator.train()
+                # DO NOT use torch.no_grad() here as we need gradients for training!
+                self.club_estimator.eval()
+                mi_upper_bound = self.club_estimator(task_flat, embodiment_flat)
+                self.club_estimator.train()
                 
                 # Add MI upper bound to loss (we want to minimize this)
-                club_loss += self.club_lambda * mi_upper_bound
+                # Convert club_loss to a tensor that can accumulate gradients
+                if club_loss.requires_grad:
+                    club_loss = club_loss + self.club_lambda * mi_upper_bound
+                else:
+                    club_loss = self.club_lambda * mi_upper_bound
+                
+                # Debug: Check CLUB loss computation
+                print(f"🎯 CLUB Loss Debug:")
+                print(f"   MI upper bound: {mi_upper_bound.item():.6f}, requires_grad: {mi_upper_bound.requires_grad}")
+                print(f"   Lambda: {self.club_lambda}")
+                print(f"   Final club_loss: {club_loss.item():.6f}, requires_grad: {club_loss.requires_grad}")
+                print(f"   Club loss grad_fn: {club_loss.grad_fn}")
                 
                 # Clean up global variables
                 if '_current_task_features' in globals():
@@ -735,6 +753,13 @@ class WanVideoPipeline(BasePipeline):
         
         # Combine losses
         total_loss = flow_loss + club_loss
+        
+        # Debug: Show final loss composition
+        print(f"🚀 Final Loss Debug:")
+        print(f"   Flow loss: {flow_loss.item():.6f}, requires_grad: {flow_loss.requires_grad}")
+        print(f"   Club loss: {club_loss.item():.6f}, requires_grad: {club_loss.requires_grad}")
+        print(f"   Total loss: {total_loss.item():.6f}, requires_grad: {total_loss.requires_grad}")
+        print(f"   Total loss grad_fn: {total_loss.grad_fn}")
 
         log_loss = {
                 'total_loss': total_loss,
