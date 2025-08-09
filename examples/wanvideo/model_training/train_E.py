@@ -3,6 +3,7 @@ from diffsynth.pipelines.wan_video_new_E import WanVideoPipeline, ModelConfig
 from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, wan_parser, enable_club_training_defaults
 from dataset_E import VideoDatasetE, create_training_dataset
 from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 import warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -251,6 +252,11 @@ if __name__ == "__main__":
     print("🚀 Initializing Accelerator for balanced GPU memory usage...")
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        kwargs_handlers=[
+            # This ensures DDP can handle parameters that don't receive gradients
+            # Critical for VACE-E components that may not always be used
+            DistributedDataParallelKwargs(find_unused_parameters=True)
+        ]
     )
     
     # Set device based on accelerator's assignment
