@@ -1919,8 +1919,11 @@ def create_vace_model_from_dit(dit_model, vace_layers=None, enable_task_processi
         local_rank = dist.get_rank()
         local_device = f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
         
+        # Get dtype from model parameters (WanModel doesn't have dtype attribute)
+        dtype = next(dit_model.parameters()).dtype
+        
         # Move to local device for distributed training
-        vace_model = vace_model.to(device=local_device, dtype=dit_model.dtype)
+        vace_model = vace_model.to(device=local_device, dtype=dtype)
         print(f"  🔄 Distributed placement: device {local_device}, rank {local_rank}")
     else:
         # Single GPU or non-distributed training

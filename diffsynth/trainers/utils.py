@@ -625,11 +625,11 @@ def launch_training_task(
         # Configure DDP to handle unused parameters (e.g., VACE-E components that may not always be used)
         accelerator = Accelerator(
             gradient_accumulation_steps=gradient_accumulation_steps,
-            # kwargs_handlers=[
-            #     # This ensures DDP can handle parameters that don't receive gradients
-            #     # Common when some model components are conditionally used
-            #     DistributedDataParallelKwargs(find_unused_parameters=True)
-            # ]
+            kwargs_handlers=[
+                # This ensures DDP can handle parameters that don't receive gradients
+                # Common when some model components are conditionally used
+                DistributedDataParallelKwargs(find_unused_parameters=True)
+            ]
         )
     
     # Set accelerator instance on model BEFORE preparation for distributed feature gathering
