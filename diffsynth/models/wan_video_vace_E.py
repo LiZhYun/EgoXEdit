@@ -655,7 +655,8 @@ class VaceWanAttentionBlock(DiTBlock):
     3. All blocks: Generate skip connections for main model integration
     """
     
-    def __init__(self, has_image_input, dim, num_heads, ffn_dim, eps=1e-6, block_id=0):
+    def __init__(self, has_image_input, dim, num_heads, ffn_dim, eps=1e-6, block_id=0, 
+                 task_dim=512, embodiment_dim=512):
         """
         Initialize VACE attention block.
         
@@ -666,12 +667,34 @@ class VaceWanAttentionBlock(DiTBlock):
             ffn_dim: Feed-forward network dimension
             eps: Layer normalization epsilon
             block_id: Block index in the VACE layer sequence
+            task_dim: Task feature dimension (default: 512)
+            embodiment_dim: Embodiment feature dimension (default: 512)
         """
         super().__init__(has_image_input, dim, num_heads, ffn_dim, eps=eps)
         self.block_id = block_id
         
         # First block handles task-video alignment via cross-attention
         if block_id == 0:
+            # Store dimensions for later use
+            self.task_dim = task_dim
+            self.embodiment_dim = embodiment_dim
+            
+            # Project task features to model dimension only when needed for cross-attention
+            self.task_to_model_proj = nn.Sequential(
+                nn.Linear(task_dim, dim),
+                nn.GELU(),
+                nn.LayerNorm(dim),
+                nn.Dropout(0.1)
+            )
+            
+            # Project embodiment features to model dimension only when needed for cross-attention
+            self.embodiment_to_model_proj = nn.Sequential(
+                nn.Linear(embodiment_dim, dim),
+                nn.GELU(),
+                nn.LayerNorm(dim),
+                nn.Dropout(0.1)
+            )
+            
             # Cross-attention for task-video feature alignment
             # Video features attend to task features for contextual information
             self.task_video_cross_attn = nn.MultiheadAttention(
@@ -682,10 +705,14 @@ class VaceWanAttentionBlock(DiTBlock):
             )
             self.task_video_norm = nn.LayerNorm(dim, eps=eps)
             
+            # Fusion weights for combining projected task and embodiment features
+            self.task_weight = nn.Parameter(torch.ones(1) * 0.5)
+            self.embodiment_weight = nn.Parameter(torch.ones(1) * 0.5)
+            
         # All blocks generate skip connections for main model integration
         self.after_proj = torch.nn.Linear(self.dim, self.dim)
 
-    def forward(self, c, x, context, t_mod, freqs):
+    def forward(self, c, x, context, t_mod, freqs, task_features=None, embodiment_features=None):
         """
         Forward pass for VACE attention block.
         
@@ -698,28 +725,69 @@ class VaceWanAttentionBlock(DiTBlock):
             context: Text conditioning from T5 encoder
             t_mod: Time modulation tensor for temporal consistency
             freqs: Positional frequency embeddings
+            task_features: Raw task features [batch, seq_len, task_dim] (block 0 only)
+            embodiment_features: Raw embodiment features [batch, seq_len, embodiment_dim] (block 0 only)
             
         Returns:
             torch.Tensor: Stacked tensor containing [all_previous_hints, skip_connection, refined_context]
             
         Processing Flow:
-        1. Block 0: Initialize editing context by projecting and adding to main features
+        1. Block 0: Project and fuse task+embodiment features, then apply cross-attention
         2. Other blocks: Extract and process accumulated context
         3. Apply standard DiT attention (self-attention + cross-attention + FFN)
         4. Generate skip connection for main model integration
         5. Accumulate all hints for hierarchical editing control
         """
         if self.block_id == 0:
-            # Initialize editing context using cross-attention for task-video alignment
-            # Video features (x) attend to task features (c) for contextual information
+            # Block 0: Handle raw task and embodiment features
+            if task_features is not None and embodiment_features is not None:
+                # Project both features to model dimension for cross-attention
+                projected_task = self.task_to_model_proj(task_features)     # [batch, seq_len, dim]
+                projected_embodiment = self.embodiment_to_model_proj(embodiment_features)  # [batch, seq_len, dim]
+                
+                # Align sequence lengths by padding/truncating for fusion
+                batch_size = projected_task.shape[0]
+                task_seq_len = projected_task.shape[1]
+                embodiment_seq_len = projected_embodiment.shape[1]
+                model_dim = projected_task.shape[2]
+                
+                if task_seq_len < embodiment_seq_len:
+                    # Pad task features to match embodiment length
+                    padding = projected_task.new_zeros(batch_size, embodiment_seq_len - task_seq_len, model_dim)
+                    projected_task_aligned = torch.cat([projected_task, padding], dim=1)
+                    projected_embodiment_aligned = projected_embodiment
+                elif task_seq_len > embodiment_seq_len:
+                    # Pad embodiment features to match task length
+                    padding = projected_embodiment.new_zeros(batch_size, task_seq_len - embodiment_seq_len, model_dim)
+                    projected_embodiment_aligned = torch.cat([projected_embodiment, padding], dim=1)
+                    projected_task_aligned = projected_task
+                else:
+                    # Same length, no padding needed
+                    projected_task_aligned = projected_task
+                    projected_embodiment_aligned = projected_embodiment
+                
+                # Fuse aligned projected features using learnable weights
+                # This keeps task and embodiment features less correlated for CLUB loss
+                c = self.task_weight * projected_task_aligned + self.embodiment_weight * projected_embodiment_aligned
+                
+            elif task_features is not None:
+                # Only task features available
+                c = self.task_to_model_proj(task_features)
+                
+            elif embodiment_features is not None:
+                # Only embodiment features available  
+                c = self.embodiment_to_model_proj(embodiment_features)
+                
+            # If c is still not set, use the input c (fallback for backward compatibility)
+            # This happens when neither task_features nor embodiment_features are provided
             
-            # Cross-attention: video attends to task features
+            # Cross-attention: video attends to fused task+embodiment features
             # query: video features [batch, video_seq_len, dim]
-            # key/value: task features [batch, task_seq_len, dim]
+            # key/value: fused features [batch, task_seq_len, dim]
             task_informed_video, _ = self.task_video_cross_attn(
                 query=x,           # Video features as query [batch, 1000, dim]
-                key=c,             # Task features as key [batch, 297, dim]  
-                value=c            # Task features as value [batch, 297, dim]
+                key=c,             # Fused features as key [batch, 297, dim]  
+                value=c            # Fused features as value [batch, 297, dim]
             )
             
             # Residual connection and normalization
@@ -797,6 +865,8 @@ class VaceWanModel(torch.nn.Module):
         task_dim=512,                  # Task fusion output dimension
         motion_seq_len=512,             # Maximum hand motion sequence length
         trajectory_seq_len=512,         # Maximum object trajectory sequence length
+        # Reduced dimensions for better CLUB loss computation
+        embodiment_dim=256,             # Embodiment feature dimension (reduced for CLUB)
     ):
         """
         Initialize VACE-E model with task and embodiment processing.
@@ -817,12 +887,14 @@ class VaceWanModel(torch.nn.Module):
             task_dim: Output dimension for fused task features
             motion_seq_len: Maximum sequence length for hand motion
             trajectory_seq_len: Maximum sequence length for object trajectory
+            embodiment_dim: Embodiment feature dimension (reduced for CLUB loss)
         """
         super().__init__()
         self.vace_layers = vace_layers
         self.vace_in_dim = vace_in_dim
         self.enable_task_processing = enable_task_processing
         self.task_dim = task_dim
+        self.embodiment_dim = embodiment_dim
         
         # Create mapping from DiT layer index to VACE block index
         # This enables efficient lookup during main model forward pass
@@ -830,8 +902,10 @@ class VaceWanModel(torch.nn.Module):
 
         # VACE attention blocks - one for each target DiT layer
         # These blocks process editing context and generate hints
+        # Pass task_dim and embodiment_dim to enable projections in block 0
         self.vace_blocks = torch.nn.ModuleList([
-            VaceWanAttentionBlock(has_image_input, dim, num_heads, ffn_dim, eps, block_id=i)
+            VaceWanAttentionBlock(has_image_input, dim, num_heads, ffn_dim, eps, block_id=i, 
+                                task_dim=task_dim, embodiment_dim=embodiment_dim)
             for i in range(len(self.vace_layers))
         ])
 
@@ -843,15 +917,18 @@ class VaceWanModel(torch.nn.Module):
         # Task processing components (new for VACE-E)
         if self.enable_task_processing:
             # Hand motion encoder for processing hand pose sequences
+            # Ensure gripper_embed_dim is reasonable for the given task_dim
+            gripper_embed_dim = min(16, task_dim // 4)  # Use 1/4 of task_dim, max 16
             self.hand_motion_encoder = WanHandMotionEncoder(
                 wrist_pose_dim=9,           # 3D position + 6D rotation
                 dim=task_dim,          # Match task dimension
                 dim_attn=task_dim,
                 dim_ffn=task_dim * 2,
-                num_heads=task_dim // 64,  # Adaptive number of heads
+                num_heads=max(1, task_dim // 64),  # Adaptive number of heads, minimum 1
                 num_layers=8,          # Fewer layers for motion
                 dropout=0.1,
-                max_seq_len=motion_seq_len
+                max_seq_len=motion_seq_len,
+                gripper_embed_dim=gripper_embed_dim
             )
             
             # Object trajectory encoder for processing object trajectories
@@ -860,45 +937,39 @@ class VaceWanModel(torch.nn.Module):
                 dim=task_dim,          # Match task dimension
                 dim_attn=task_dim,
                 dim_ffn=task_dim * 2,
-                num_heads=task_dim // 64,  # Adaptive number of heads
+                num_heads=max(1, task_dim // 64),  # Adaptive number of heads, minimum 1
                 num_layers=6,          # Even fewer layers for trajectories
                 dropout=0.1,
                 max_seq_len=trajectory_seq_len
             )
             
             # Task feature fusion module
+            # Adjust num_heads based on task_dim to avoid dimension mismatches
+            fusion_num_heads = min(16, max(1, task_dim // 8))  # Ensure reasonable num_heads
             self.task_fusion = WanTaskFeatureFusion(
                 text_dim=text_dim,
                 motion_dim=task_dim,
                 trajectory_dim=task_dim,
                 task_dim=task_dim,
-                num_heads=16,
+                num_heads=fusion_num_heads,
                 dropout=0.1
             )
             
             # Embodiment image adapter for processing CLIP-encoded end-effector images
-            # Converts CLIP features (typically 1280-dim) to model dimension
+            # Converts CLIP features to reduced dimension for better CLUB loss computation
+            # This keeps embodiment features at a lower dimension until projection in block 0
             self.embodiment_image_adapter = nn.Sequential(
-                nn.Linear(1280, dim // 2),  # CLIP image features are typically 1280-dim
+                nn.Linear(1280, embodiment_dim * 2),  # CLIP image features are typically 1280-dim
                 nn.GELU(),
-                nn.LayerNorm(dim // 2),
+                nn.LayerNorm(embodiment_dim * 2),
                 nn.Dropout(0.1),
-                nn.Linear(dim // 2, dim),
-                nn.LayerNorm(dim)
+                nn.Linear(embodiment_dim * 2, embodiment_dim),  # Reduce to embodiment_dim
+                nn.LayerNorm(embodiment_dim)
             )
             
-            # Project task features to main model dimension
-            self.task_to_model_proj = nn.Sequential(
-                nn.Linear(task_dim, dim),
-                nn.GELU(),
-                nn.LayerNorm(dim),
-                nn.Dropout(0.1)
-            )
-            
-            # Simple fusion for combining task and embodiment features
-            # Using weighted addition instead of cross-attention to reduce correlation
-            self.task_weight = nn.Parameter(torch.ones(1) * 0.5)  # Learnable weight for task features
-            self.embodiment_weight = nn.Parameter(torch.ones(1) * 0.5)  # Learnable weight for embodiment features
+            # NOTE: task_to_model_proj and fusion weights are now moved to VaceWanAttentionBlock (block_id=0)
+            # This allows task and embodiment features to stay in their natural lower dimensions
+            # until they need to be projected for cross-attention in the first VACE block
 
     def forward(
         self, x, vace_context, context, t_mod, freqs,
@@ -1036,8 +1107,8 @@ class VaceWanModel(torch.nn.Module):
                 trajectory_mask=trajectory_mask
             )
             
-            # Project task features to main model dimension
-            task_features = self.task_to_model_proj(task_features)
+            # Keep task features in their natural dimension (task_dim)
+            # Projection to model dimension will happen in VaceWanAttentionBlock (block_id=0)
         
         # === EMBODIMENT FEATURE PROCESSING ===
         embodiment_features = None
@@ -1082,53 +1153,27 @@ class VaceWanModel(torch.nn.Module):
             # Concatenate all processed context tensors
             embodiment_features = torch.cat(processed_c)
         
-        # === TASK-EMBODIMENT FUSION ===
-        if task_features is not None and embodiment_features is not None:
-            # Weighted addition of task and embodiment features
-            # Reduces correlation between modalities for independent learning
-            
-            # Align sequence lengths by padding/truncating (for fusion only)
-            task_seq_len = task_features.shape[1]
-            embodiment_seq_len = embodiment_features.shape[1]
-            
-            if task_seq_len < embodiment_seq_len:
-                # Pad task features
-                padding = task_features.new_zeros(batch_size, embodiment_seq_len - task_seq_len, task_features.shape[2])
-                task_features_aligned = torch.cat([task_features, padding], dim=1)
-                embodiment_features_aligned = embodiment_features
-            elif task_seq_len > embodiment_seq_len:
-                # Pad embodiment features
-                padding = embodiment_features.new_zeros(batch_size, task_seq_len - embodiment_seq_len, embodiment_features.shape[2])
-                embodiment_features_aligned = torch.cat([embodiment_features, padding], dim=1)
-                task_features_aligned = task_features
-            else:
-                # Same length
-                task_features_aligned = task_features
-                embodiment_features_aligned = embodiment_features
-            
-            # Weighted addition: combine task and embodiment features without cross-attention
-            # This keeps task and embodiment features less correlated
-            c = self.task_weight * task_features_aligned + self.embodiment_weight * embodiment_features_aligned
-            
-        elif task_features is not None:
-            # Only task features available (keep natural sequence length)
-            c = task_features
-                
-        elif embodiment_features is not None:
-            # Only embodiment features available (keep natural sequence length)
-            c = embodiment_features
-            
+        # === FEATURE PREPARATION ===
+        # Keep task and embodiment features in their natural lower dimensions
+        # The first VACE block (block_id=0) will handle projection and fusion
+        
+        # Store original low-dimensional features for CLUB loss computation
+        raw_task_features = task_features      # [batch, seq_len, task_dim=512]
+        raw_embodiment_features = embodiment_features  # [batch, seq_len, embodiment_dim=256]
+        
+        # For backward compatibility with non-task processing, create a fallback context
+        if task_features is None and embodiment_features is None:
+            # No features available - create zero tensor for fallback
+            c = torch.zeros(batch_size, 1, self.task_dim, device=model_device, dtype=model_dtype)
         else:
-            # No features available - create zero tensor matching task dimension
-            # Use a small sequence length as placeholder
-            c = torch.zeros(batch_size, 1, self.task_to_model_proj[0].out_features, device=model_device)
+            # Features will be processed in the first VACE block
+            c = None
         
         # === VACE ATTENTION PROCESSING ===
         
-        # Ensure all VACE blocks and projection layers are on correct device and dtype
+        # Ensure all VACE blocks are on correct device and dtype
         for i, block in enumerate(self.vace_blocks):
             self.vace_blocks[i] = block.to(device=model_device, dtype=model_dtype)
-        self.task_to_model_proj = self.task_to_model_proj.to(device=model_device, dtype=model_dtype)
         
         # Step 4: Define gradient checkpointing wrapper
         # This enables memory-efficient training for large models
@@ -1139,25 +1184,34 @@ class VaceWanModel(torch.nn.Module):
         
         # Step 5: Process through VACE attention blocks
         # Each block refines the context and accumulates hints
-        for block in self.vace_blocks:
+        for i, block in enumerate(self.vace_blocks):
+            # First block (block_id=0) gets raw task and embodiment features
+            # Other blocks get the processed context from previous blocks
+            if block.block_id == 0:
+                block_task_features = raw_task_features
+                block_embodiment_features = raw_embodiment_features
+            else:
+                block_task_features = None
+                block_embodiment_features = None
+                
             if use_gradient_checkpointing_offload:
                 # Maximum memory efficiency: checkpoint on CPU
                 with torch.autograd.graph.save_on_cpu():
                     c = torch.utils.checkpoint.checkpoint(
                         create_custom_forward(block),
-                        c, x, context, t_mod, freqs,
+                        c, x, context, t_mod, freqs, block_task_features, block_embodiment_features,
                         use_reentrant=False,
                     )
             elif use_gradient_checkpointing:
                 # Standard gradient checkpointing: save on GPU
                 c = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(block),
-                    c, x, context, t_mod, freqs,
+                    c, x, context, t_mod, freqs, block_task_features, block_embodiment_features,
                     use_reentrant=False,
                 )
             else:
                 # Standard forward pass: full memory usage
-                c = block(c, x, context, t_mod, freqs)
+                c = block(c, x, context, t_mod, freqs, block_task_features, block_embodiment_features)
         
         # Step 6: Extract editing hints
         # Remove the final context tensor, keeping only the skip connections
@@ -1166,7 +1220,8 @@ class VaceWanModel(torch.nn.Module):
         
         # Optionally return intermediate features for CLUB loss computation
         if return_intermediate_features:
-            return hints, task_features, embodiment_features
+            # Return raw lower-dimensional features for better CLUB loss computation
+            return hints, raw_task_features, raw_embodiment_features
         else:
             return hints
     
@@ -1857,7 +1912,8 @@ def example_real_dit_integration():
     return True
 
 
-def create_vace_model_from_dit(dit_model, vace_layers=None, enable_task_processing=True):
+def create_vace_model_from_dit(dit_model, vace_layers=None, enable_task_processing=True, 
+                              embodiment_dim=64, task_dim=64):
     """
     Helper function to create a VACE-E model that matches a given DiT model architecture.
     
@@ -1868,6 +1924,7 @@ def create_vace_model_from_dit(dit_model, vace_layers=None, enable_task_processi
         dit_model: Pre-trained WanModel (DiT) instance
         vace_layers: Tuple of DiT layer indices to use for VACE (default: every 5th layer)
         enable_task_processing: Whether to enable task feature processing
+        embodiment_dim: Embodiment feature dimension (reduced for CLUB loss, default: 256)
         
     Returns:
         Initialized VaceWanModel instance
@@ -1879,7 +1936,8 @@ def create_vace_model_from_dit(dit_model, vace_layers=None, enable_task_processi
         # Create matching VACE model
         vace_model = create_vace_model_from_dit(
             pipe.dit, 
-            vace_layers=(0, 5, 10, 15, 20, 25)
+            vace_layers=(0, 5, 10, 15, 20, 25),
+            embodiment_dim=256
         )
     """
     # Extract architecture parameters from DiT model
@@ -1907,6 +1965,8 @@ def create_vace_model_from_dit(dit_model, vace_layers=None, enable_task_processi
         vace_in_dim=96,  # Standard VACE input dimension
         patch_size=(1, 2, 2),  # Standard patch size
         enable_task_processing=enable_task_processing,
+        embodiment_dim=embodiment_dim,  # Use reduced dimension for CLUB loss
+        task_dim=task_dim,
         **dit_config
     )
     
