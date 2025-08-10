@@ -129,11 +129,11 @@ class WanHandMotionEncoder(torch.nn.Module):
     
     def __init__(self,
                  wrist_pose_dim=9,      # 3D position + 6D rotation per hand
-                 dim=4096,              # Hidden dimension
-                 dim_attn=4096,         # Attention dimension  
-                 dim_ffn=10240,         # Feed-forward dimension
-                 num_heads=64,          # Number of attention heads
-                 num_layers=12,         # Number of transformer layers (fewer than text)
+                 dim=512,              # Hidden dimension
+                 dim_attn=512,         # Attention dimension  
+                 dim_ffn=1024,         # Feed-forward dimension
+                 num_heads=8,          # Number of attention heads
+                 num_layers=6,         # Number of transformer layers (fewer than text)
                  num_buckets=32,        # Positional embedding buckets
                  shared_pos=False,      # Whether to share positional embeddings
                  dropout=0.1,           # Dropout rate
@@ -320,11 +320,11 @@ class WanObjectTrajectoryEncoder(torch.nn.Module):
     
     def __init__(self,
                  input_dim=9,           # 3D position + 6D rotation per object
-                 dim=4096,              # Hidden dimension
-                 dim_attn=4096,         # Attention dimension
-                 dim_ffn=10240,         # Feed-forward dimension
-                 num_heads=64,          # Number of attention heads
-                 num_layers=8,          # Fewer layers than hand motion (objects simpler)
+                 dim=512,              # Hidden dimension
+                 dim_attn=512,         # Attention dimension
+                 dim_ffn=1024,         # Feed-forward dimension
+                 num_heads=8,          # Number of attention heads
+                 num_layers=6,          # Fewer layers than hand motion (objects simpler)
                  num_buckets=32,        # Positional embedding buckets
                  shared_pos=False,      # Whether to share positional embeddings
                  dropout=0.1,           # Dropout rate
@@ -479,10 +479,10 @@ class WanTaskFeatureFusion(torch.nn.Module):
     
     def __init__(self,
                  text_dim=4096,         # Input text embedding dimension
-                 motion_dim=4096,       # Hand motion embedding dimension
-                 trajectory_dim=4096,   # Object trajectory embedding dimension
-                 task_dim=2048,         # Output task embedding dimension
-                 num_heads=16,          # Number of attention heads for fusion
+                 motion_dim=512,       # Hand motion embedding dimension
+                 trajectory_dim=512,   # Object trajectory embedding dimension
+                 task_dim=512,         # Output task embedding dimension
+                 num_heads=8,          # Number of attention heads for fusion
                  dropout=0.1):
         super(WanTaskFeatureFusion, self).__init__()
         self.text_dim = text_dim
@@ -794,7 +794,7 @@ class VaceWanModel(torch.nn.Module):
         # New parameters for task processing
         enable_task_processing=True,    # Whether to enable task feature processing
         text_dim=4096,                  # Text embedding dimension
-        task_dim=2048,                  # Task fusion output dimension
+        task_dim=512,                  # Task fusion output dimension
         motion_seq_len=512,             # Maximum hand motion sequence length
         trajectory_seq_len=512,         # Maximum object trajectory sequence length
     ):
