@@ -153,13 +153,15 @@ class VideoDatasetE(torch.utils.data.Dataset):
         total_episodes = len(self.episodes)
         valid_episodes = []
         filtered_count = 0
+        validation_stats = {}
         
-        print("Validating episodes...")
+        print("Validating episodes with comprehensive checks...")
         for episode in tqdm(self.episodes, desc="Validating"):
             if self._validate_episode(episode):
                 valid_episodes.append(episode)
             else:
                 filtered_count += 1
+                # Track validation failure reasons could be added here if needed
         
         self.episodes = valid_episodes
         
@@ -177,6 +179,123 @@ class VideoDatasetE(torch.utils.data.Dataset):
         elif len(self.episodes) < total_episodes * 0.5:
             warnings.warn(f"More than 50% of episodes were filtered out! Only {len(self.episodes)}/{total_episodes} episodes remain.")
     
+    def _validate_video_file(self, video_path, episode_name, video_type="Video"):
+        """Comprehensive video file validation using multiple methods."""
+        import subprocess
+        import json
+        
+        # Method 1: ffprobe validation with timeout
+        def validate_with_ffprobe(video_path, timeout=10):
+            try:
+                cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', video_path]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                if result.returncode != 0:
+                    return False, f"ffprobe failed with return code {result.returncode}"
+                
+                # Parse metadata
+                data = json.loads(result.stdout)
+                if 'streams' not in data or len(data['streams']) == 0:
+                    return False, "No streams found in video"
+                
+                # Check for video stream
+                video_streams = [s for s in data['streams'] if s.get('codec_type') == 'video']
+                if not video_streams:
+                    return False, "No video stream found"
+                
+                # Check video stream properties
+                video_stream = video_streams[0]
+                if video_stream.get('width', 0) <= 0 or video_stream.get('height', 0) <= 0:
+                    return False, f"Invalid dimensions: {video_stream.get('width')}x{video_stream.get('height')}"
+                
+                # Check duration
+                duration = float(video_stream.get('duration', 0))
+                if duration <= 0:
+                    return False, f"Invalid duration: {duration}"
+                
+                return True, "Valid video metadata"
+                
+            except subprocess.TimeoutExpired:
+                return False, "ffprobe validation timeout"
+            except json.JSONDecodeError:
+                return False, "Invalid ffprobe output"
+            except Exception as e:
+                return False, f"ffprobe error: {e}"
+        
+        # Method 2: OpenCV validation
+        def validate_with_opencv(video_path):
+            try:
+                import cv2
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    return False, "Cannot open with OpenCV"
+                
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    cap.release()
+                    return False, "Cannot read first frame"
+                
+                # Check frame dimensions
+                if frame.shape[0] == 0 or frame.shape[1] == 0:
+                    cap.release()
+                    return False, "Invalid frame dimensions"
+                
+                cap.release()
+                return True, "OpenCV validation passed"
+                
+            except Exception as e:
+                return False, f"OpenCV error: {e}"
+        
+        # Method 3: imageio validation (similar to actual loading)
+        def validate_with_imageio(video_path):
+            try:
+                import imageio
+                reader = imageio.get_reader(video_path)
+                
+                # Try to get metadata
+                meta = reader.get_meta_data()
+                if not meta:
+                    reader.close()
+                    return False, "No metadata available"
+                
+                # Try to read first frame
+                try:
+                    first_frame = reader.get_data(0)
+                    if first_frame is None or first_frame.size == 0:
+                        reader.close()
+                        return False, "First frame is empty"
+                except Exception as e:
+                    reader.close()
+                    return False, f"Cannot read first frame: {e}"
+                
+                reader.close()
+                return True, "imageio validation passed"
+                
+            except Exception as e:
+                return False, f"imageio error: {e}"
+        
+        # Run all validations
+        validations = [
+            ("opencv", validate_with_opencv), 
+            ("imageio", validate_with_imageio)
+        ]
+        
+        for method_name, validate_fn in validations:
+            try:
+                if method_name == "ffprobe":
+                    is_valid, reason = validate_fn(video_path)
+                else:
+                    is_valid, reason = validate_fn(video_path)
+                
+                if not is_valid:
+                    print(f"❌ Episode {episode_name}: {video_type} video failed {method_name} validation: {reason}")
+                    return False
+                    
+            except Exception as e:
+                print(f"❌ Episode {episode_name}: {video_type} video validation error with {method_name}: {e}")
+                return False
+        
+        return True
+
     def _discover_episodes(self):
         """Discover all episodes from the folder structure."""
         episodes = []
@@ -244,30 +363,11 @@ class VideoDatasetE(torch.utils.data.Dataset):
             print(f"❌ Episode {episode_name}: Cannot access target video file")
             return False
         
-        # Check for corrupted video file by trying to read first frame
-        try:
-            import cv2
-            cap = cv2.VideoCapture(target_video_path)
-            if not cap.isOpened():
-                print(f"❌ Episode {episode_name}: Cannot open video file with OpenCV")
-                return False
-            
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                print(f"❌ Episode {episode_name}: Cannot read first frame from video")
-                return False
-            
-            # Check frame dimensions
-            if frame.shape[0] == 0 or frame.shape[1] == 0:
-                print(f"❌ Episode {episode_name}: Video has invalid frame dimensions")
-                return False
-            
-            cap.release()
-        except Exception as e:
-            print(f"❌ Episode {episode_name}: Error checking video file: {e}")
+        # Enhanced video validation with multiple methods
+        if not self._validate_video_file(target_video_path, episode_name, "Target"):
             return False
         
-        # Check optional VACE files if they exist
+        # Check VACE files with comprehensive validation
         vace_video_path = os.path.join(episode_path, f"{episode_name}_hands_masked.mp4")
         if os.path.exists(vace_video_path):
             try:
@@ -278,6 +378,11 @@ class VideoDatasetE(torch.utils.data.Dataset):
                 if file_size < 1024:
                     print(f"❌ Episode {episode_name}: VACE video file is too small ({file_size} bytes)")
                     return False
+                
+                # Comprehensive VACE video validation
+                if not self._validate_video_file(vace_video_path, episode_name, "VACE"):
+                    return False
+                    
             except OSError:
                 print(f"❌ Episode {episode_name}: Cannot access VACE video file")
                 return False
@@ -295,6 +400,11 @@ class VideoDatasetE(torch.utils.data.Dataset):
                 if file_size < 1024:
                     print(f"❌ Episode {episode_name}: VACE mask file is too small ({file_size} bytes)")
                     return False
+                
+                # Comprehensive VACE mask validation
+                if not self._validate_video_file(vace_mask_path, episode_name, "VACE Mask"):
+                    return False
+                    
             except OSError:
                 print(f"❌ Episode {episode_name}: Cannot access VACE mask file")
                 return False

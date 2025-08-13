@@ -406,12 +406,37 @@ class ModelLogger:
     def on_epoch_end(self, accelerator, model, epoch_id):
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
-            state_dict = accelerator.get_state_dict(model)
-            state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
-            state_dict = self.state_dict_converter(state_dict)
-            os.makedirs(self.output_path, exist_ok=True)
-            path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
-            accelerator.save(state_dict, path, safe_serialization=True)
+            try:
+                # Try the standard approach first
+                state_dict = accelerator.get_state_dict(model)
+                state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
+                state_dict = self.state_dict_converter(state_dict)
+                os.makedirs(self.output_path, exist_ok=True)
+                path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
+                accelerator.save(state_dict, path, safe_serialization=True)
+                print(f"✅ Checkpoint saved: {path}")
+            except Exception as e:
+                if "CUDA_HOME" in str(e):
+                    print(f"⚠️ Standard checkpoint saving failed due to CUDA_HOME issue, using fallback method...")
+                    # Fallback: get state dict directly from the model
+                    try:
+                        raw_model = accelerator.unwrap_model(model)
+                        state_dict = raw_model.state_dict()
+                        state_dict = raw_model.export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
+                        state_dict = self.state_dict_converter(state_dict)
+                        os.makedirs(self.output_path, exist_ok=True)
+                        path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
+                        
+                        # Use torch.save instead of accelerator.save
+                        from safetensors.torch import save_file
+                        save_file(state_dict, path)
+                        print(f"✅ Checkpoint saved (fallback): {path}")
+                    except Exception as e2:
+                        print(f"❌ Both checkpoint saving methods failed: {e2}")
+                        return
+                else:
+                    print(f"❌ Checkpoint saving failed: {e}")
+                    return
             
             if self.use_wandb:
                 # Log epoch completion
@@ -637,6 +662,7 @@ def launch_training_task(
         model.set_accelerator(accelerator)
     
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
+    model_logger.on_epoch_end(accelerator, model, 0)
     
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
