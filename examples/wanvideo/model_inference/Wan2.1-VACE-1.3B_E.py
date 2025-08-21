@@ -59,7 +59,7 @@ from PIL import Image
 import numpy as np
 import h5py
 import json
-from diffsynth import save_video, VideoData
+from diffsynth import save_video, VideoData, load_state_dict
 from diffsynth.pipelines.wan_video_new_E import WanVideoPipeline, ModelConfig
 from modelscope import dataset_snapshot_download
 import os
@@ -68,7 +68,7 @@ import shutil
 import glob
 
 
-def load_task_metadata(metadata_path="/home/zhiyuan/Code/h2rego_data_preprocess/data/ph2d_metadata.json"):
+def load_task_metadata(metadata_path="/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json"):
     """
     Load task metadata from JSON file.
     
@@ -142,7 +142,7 @@ def generate_task_prompt(task_name, metadata):
     return prompt
 
 
-def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Code/small_dataset/"):
+def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Codes/DataSets/small_test"):
     """
     Load robot demonstration data from HDF5 files for VACE-E processing.
     
@@ -443,19 +443,22 @@ pipe = WanVideoPipeline.from_pretrained(
     ],
     # VACE-E configuration
     enable_vace_e=True,
-    vace_e_layers=(0,),
+    vace_e_layers=(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28),
     vace_e_task_processing=True,
 )
+
+state_dict = load_state_dict("/home/zhiyuan/Codes/DiffSynth-Studio/models/train/Wan2.1-VACE-E-1.3B_full/epoch-1.safetensors")
+pipe.vace_e.load_state_dict(state_dict)
 
 pipe.enable_vram_management()
 
 # Load robot demonstration data for VACE-E
 print("\n=== Loading Robot Demonstration Data for VACE-E ===")
-robot_episodes = load_robot_data_from_hdf5("/home/zhiyuan/Code/small_dataset/")
+robot_episodes = load_robot_data_from_hdf5("/home/zhiyuan/Codes/DataSets/small_test")
 
 # Load task metadata for prompt generation
 print("\n=== Loading Task Metadata ===")
-task_metadata = load_task_metadata("/home/zhiyuan/Code/h2rego_data_preprocess/data/ph2d_metadata.json")
+task_metadata = load_task_metadata("/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json")
 
 if not robot_episodes:
     print("⚠️ No robot episodes loaded, continuing with standard VACE generation...")

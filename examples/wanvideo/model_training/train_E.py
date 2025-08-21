@@ -1,4 +1,5 @@
 import torch, os, json
+from diffsynth import load_state_dict
 from diffsynth.pipelines.wan_video_new_E import WanVideoPipeline, ModelConfig
 from diffsynth.trainers.utils import DiffusionTrainingModule, ModelLogger, launch_training_task, wan_parser, enable_club_training_defaults
 from dataset_E import VideoDatasetE, create_training_dataset
@@ -21,6 +22,7 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         enable_vace_e=True,
         vace_e_layers=(0, 5, 10, 15, 20, 25),
         vace_e_task_processing=True,
+        resume_path=None,
     ):
         super().__init__()
         # Load models (following exact train.py pattern)
@@ -52,6 +54,10 @@ class WanTrainingModuleE(DiffusionTrainingModule):
             vace_e_layers=vace_e_layers,
             vace_e_task_processing=vace_e_task_processing,
         )
+
+        if resume_path:
+            state_dict = load_state_dict(resume_path)
+            self.pipe.vace_e.load_state_dict(state_dict)
         
         # Reset training scheduler
         self.pipe.scheduler.set_timesteps(1000, training=True)
@@ -244,6 +250,8 @@ if __name__ == "__main__":
     parser.add_argument("--club_lr", type=float, default=1e-3, help="Learning rate for CLUB optimizer")
     parser.add_argument("--enable_club_loss", action="store_true", default=True, help="Enable CLUB loss for mutual information minimization")
     parser.add_argument("--disable_club_loss", action="store_true", help="Disable CLUB loss (overrides enable_club_loss)")
+
+    parser.add_argument("--resume_path", type=str, default=None, help="Resume training from checkpoint")
     
     args = parser.parse_args()
     
@@ -292,6 +300,7 @@ if __name__ == "__main__":
         enable_vace_e=args.enable_vace_e,
         vace_e_layers=vace_e_layers,
         vace_e_task_processing=args.vace_e_task_processing,
+        resume_path=args.resume_path,
     )
     
     # Set device on model for balanced loading

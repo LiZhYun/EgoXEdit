@@ -6,5 +6,7 @@ output/
 outputs/
 checkpoints/
 wandb/
+.vscode/
+.github/
 # # ignore all files in the models folder
 # models/
