@@ -641,6 +641,7 @@ class WanVideoPipeline(BasePipeline):
         
         # Initialize CLUB loss with gradients enabled
         club_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
+        club_training_loss = 0.0
         
         # Compute CLUB loss if VACE-E features are available and CLUB loss is enabled
         # Ensure all ranks take the same code path
@@ -764,7 +765,8 @@ class WanVideoPipeline(BasePipeline):
         log_loss = {
                 'total_loss': total_loss,
                 'flow_loss': flow_loss,
-                'club_loss': club_loss
+                'club_loss': club_loss,
+                'club_training_loss': club_training_loss
             }
         
         return total_loss, log_loss
