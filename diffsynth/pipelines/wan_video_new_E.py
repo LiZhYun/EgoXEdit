@@ -674,25 +674,13 @@ class WanVideoPipeline(BasePipeline):
                 print(f"🔍 Embodiment features: shape={embodiment_features.shape}, requires_grad={embodiment_features.requires_grad}, grad_fn={embodiment_features.grad_fn}")
             
             if task_features is not None and embodiment_features is not None:
-                # Reduce feature dimensions to prevent memory issues
-                print(f"Original feature shapes: task={task_features.shape}, embodiment={embodiment_features.shape}")
+                # Use the compact features already processed by VACE-E model
+                # The two-stage projection (Attention → MLP) is now handled in VACE-E
+                print(f"Using VACE-E processed features: task={task_features.shape}, embodiment={embodiment_features.shape}")
                 
-                # Use max pooling instead of mean pooling to preserve temporal structure
-                if task_features.dim() == 3:  # [batch, seq_len, dim]
-                    task_reduced = torch.max(task_features, dim=1)[0]  # [batch, dim] - preserves peak activations
-                else:
-                    task_reduced = task_features
-                    
-                if embodiment_features.dim() == 3:  # [batch, seq_len, dim] 
-                    embodiment_reduced = torch.max(embodiment_features, dim=1)[0]  # [batch, dim] - preserves peak activations
-                else:
-                    embodiment_reduced = embodiment_features
-                
-                # Add normalization to stabilize features for better CLUB loss computation
-                if task_reduced.dim() == 2:  # [batch, dim]
-                    task_reduced = torch.nn.functional.normalize(task_reduced, p=2, dim=1)  # L2 normalization
-                if embodiment_reduced.dim() == 2:  # [batch, dim]
-                    embodiment_reduced = torch.nn.functional.normalize(embodiment_reduced, p=2, dim=1)  # L2 normalization
+                # Features are already compact and normalized from VACE-E model
+                task_reduced = task_features
+                embodiment_reduced = embodiment_features
                 
                 # Gather features from all GPUs for contrastive loss computation
                 # This ensures each GPU has the full global batch

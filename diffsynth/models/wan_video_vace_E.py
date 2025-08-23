@@ -970,6 +970,51 @@ class VaceWanModel(torch.nn.Module):
             # NOTE: task_to_model_proj and fusion weights are now moved to VaceWanAttentionBlock (block_id=0)
             # This allows task and embodiment features to stay in their natural lower dimensions
             # until they need to be projected for cross-attention in the first VACE block
+            
+            # Two-stage projection for CLUB loss: Attention → Fixed-length → MLP → Compact
+            # Stage 1: Attention-based sequence pooling to fixed-length representations
+            # Stage 2: MLP projection to compact dimensions for CLUB loss computation
+            compact_dim = min(64, min(task_dim, embodiment_dim) // 4)  # Compact embedding dimension
+            
+            # Task attention projector: [batch, seq_len, task_dim] → [batch, task_dim]
+            self.task_attention_projector = nn.MultiheadAttention(
+                embed_dim=task_dim,
+                num_heads=1,  # Adaptive number of heads
+                dropout=0.1,
+                batch_first=True
+            )
+            self.task_attention_query = nn.Parameter(torch.randn(1, 1, task_dim) * 0.02)  # Learnable query
+            
+            # Task MLP projector: [batch, task_dim] → [batch, compact_dim]
+            self.task_mlp_projector = nn.Sequential(
+                nn.Linear(task_dim, compact_dim * 2),
+                nn.GELU(),
+                nn.Dropout(0.1),
+                nn.Linear(compact_dim * 2, compact_dim),
+                nn.LayerNorm(compact_dim)
+            )
+            
+            # Embodiment attention projector: [batch, seq_len, embodiment_dim] → [batch, embodiment_dim]
+            self.embodiment_attention_projector = nn.MultiheadAttention(
+                embed_dim=embodiment_dim,
+                num_heads=1,  # Adaptive number of heads
+                dropout=0.1,
+                batch_first=True
+            )
+            self.embodiment_attention_query = nn.Parameter(torch.randn(1, 1, embodiment_dim) * 0.02)  # Learnable query
+            
+            # Embodiment MLP projector: [batch, embodiment_dim] → [batch, compact_dim]
+            self.embodiment_mlp_projector = nn.Sequential(
+                nn.Linear(embodiment_dim, compact_dim * 2),
+                nn.GELU(),
+                nn.Dropout(0.1),
+                nn.Linear(compact_dim * 2, compact_dim),
+                nn.LayerNorm(compact_dim)
+            )
+            
+            print(f"✅ VACE-E Two-stage projectors initialized:")
+            print(f"   Stage 1 - Attention pooling: task_dim={task_dim}, embodiment_dim={embodiment_dim}")
+            print(f"   Stage 2 - MLP projection: → compact_dim={compact_dim}")
 
     def forward(
         self, x, vace_context, context, t_mod, freqs,
@@ -1160,6 +1205,45 @@ class VaceWanModel(torch.nn.Module):
         # Store original low-dimensional features for CLUB loss computation
         raw_task_features = task_features      # [batch, seq_len, task_dim=512]
         raw_embodiment_features = embodiment_features  # [batch, seq_len, embodiment_dim=256]
+        
+        # Two-stage projection for CLUB loss: Attention → Fixed-length → MLP → Compact
+        if self.enable_task_processing and raw_task_features is not None and raw_embodiment_features is not None:
+            # Stage 1: Attention-based sequence pooling to fixed-length representations
+            batch_size = raw_task_features.shape[0]
+            
+            # Task attention pooling: [batch, seq_len, task_dim] → [batch, task_dim]
+            task_query = self.task_attention_query.expand(batch_size, -1, -1)  # [batch, 1, task_dim]
+            task_attended, _ = self.task_attention_projector(
+                query=task_query,           # [batch, 1, task_dim]
+                key=raw_task_features,      # [batch, seq_len, task_dim]
+                value=raw_task_features,    # [batch, seq_len, task_dim]
+            )  # [batch, 1, task_dim]
+            task_fixed_length = task_attended.squeeze(1)  # [batch, task_dim]
+            
+            # Embodiment attention pooling: [batch, seq_len, embodiment_dim] → [batch, embodiment_dim]
+            embodiment_query = self.embodiment_attention_query.expand(batch_size, -1, -1)  # [batch, 1, embodiment_dim]
+            embodiment_attended, _ = self.embodiment_attention_projector(
+                query=embodiment_query,           # [batch, 1, embodiment_dim]
+                key=raw_embodiment_features,      # [batch, seq_len, embodiment_dim]
+                value=raw_embodiment_features,    # [batch, seq_len, embodiment_dim]
+            )  # [batch, 1, embodiment_dim]
+            embodiment_fixed_length = embodiment_attended.squeeze(1)  # [batch, embodiment_dim]
+            
+            # Stage 2: MLP projection to compact dimensions
+            task_compact = self.task_mlp_projector(task_fixed_length)  # [batch, compact_dim]
+            embodiment_compact = self.embodiment_mlp_projector(embodiment_fixed_length)  # [batch, compact_dim]
+            
+            # Normalize for stable CLUB loss computation
+            task_compact = torch.nn.functional.normalize(task_compact, p=2, dim=1)
+            embodiment_compact = torch.nn.functional.normalize(embodiment_compact, p=2, dim=1)
+            
+            # Use compact features for CLUB loss
+            raw_task_features = task_compact
+            raw_embodiment_features = embodiment_compact
+            
+            print(f"🔧 VACE-E Two-stage projection:")
+            print(f"   Stage 1 - Attention pooled: task={task_fixed_length.shape}, embodiment={embodiment_fixed_length.shape}")
+            print(f"   Stage 2 - MLP compact: task={task_compact.shape}, embodiment={embodiment_compact.shape}")
         
         # For backward compatibility with non-task processing, create a fallback context
         if task_features is None and embodiment_features is None:
