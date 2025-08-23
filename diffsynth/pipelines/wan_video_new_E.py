@@ -677,16 +677,22 @@ class WanVideoPipeline(BasePipeline):
                 # Reduce feature dimensions to prevent memory issues
                 print(f"Original feature shapes: task={task_features.shape}, embodiment={embodiment_features.shape}")
                 
-                # Use global average pooling to reduce sequence dimension if needed
+                # Use max pooling instead of mean pooling to preserve temporal structure
                 if task_features.dim() == 3:  # [batch, seq_len, dim]
-                    task_reduced = torch.mean(task_features, dim=1)  # [batch, dim]
+                    task_reduced = torch.max(task_features, dim=1)[0]  # [batch, dim] - preserves peak activations
                 else:
                     task_reduced = task_features
                     
                 if embodiment_features.dim() == 3:  # [batch, seq_len, dim] 
-                    embodiment_reduced = torch.mean(embodiment_features, dim=1)  # [batch, dim]
+                    embodiment_reduced = torch.max(embodiment_features, dim=1)[0]  # [batch, dim] - preserves peak activations
                 else:
                     embodiment_reduced = embodiment_features
+                
+                # Add normalization to stabilize features for better CLUB loss computation
+                if task_reduced.dim() == 2:  # [batch, dim]
+                    task_reduced = torch.nn.functional.normalize(task_reduced, p=2, dim=1)  # L2 normalization
+                if embodiment_reduced.dim() == 2:  # [batch, dim]
+                    embodiment_reduced = torch.nn.functional.normalize(embodiment_reduced, p=2, dim=1)  # L2 normalization
                 
                 # Gather features from all GPUs for contrastive loss computation
                 # This ensures each GPU has the full global batch
