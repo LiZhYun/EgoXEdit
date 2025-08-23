@@ -974,7 +974,7 @@ class VaceWanModel(torch.nn.Module):
             # Two-stage projection for CLUB loss: Attention → Fixed-length → MLP → Compact
             # Stage 1: Attention-based sequence pooling to fixed-length representations
             # Stage 2: MLP projection to compact dimensions for CLUB loss computation
-            compact_dim = min(64, min(task_dim, embodiment_dim) // 4)  # Compact embedding dimension
+            compact_dim = 64  # Compact embedding dimension
             
             # Task attention projector: [batch, seq_len, task_dim] → [batch, task_dim]
             self.task_attention_projector = nn.MultiheadAttention(
