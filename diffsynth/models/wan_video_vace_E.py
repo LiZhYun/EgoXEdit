@@ -926,7 +926,7 @@ class VaceWanModel(torch.nn.Module):
                 dim_ffn=task_dim * 2,
                 num_heads=max(1, task_dim // 64),  # Adaptive number of heads, minimum 1
                 num_layers=8,          # Fewer layers for motion
-                dropout=0.1,
+                dropout=0,
                 max_seq_len=motion_seq_len,
                 gripper_embed_dim=gripper_embed_dim
             )
@@ -939,7 +939,7 @@ class VaceWanModel(torch.nn.Module):
                 dim_ffn=task_dim * 2,
                 num_heads=max(1, task_dim // 64),  # Adaptive number of heads, minimum 1
                 num_layers=6,          # Even fewer layers for trajectories
-                dropout=0.1,
+                dropout=0,
                 max_seq_len=trajectory_seq_len
             )
             
@@ -952,7 +952,7 @@ class VaceWanModel(torch.nn.Module):
                 trajectory_dim=task_dim,
                 task_dim=task_dim,
                 num_heads=fusion_num_heads,
-                dropout=0.1
+                dropout=0
             )
             
             # Embodiment image adapter for processing CLIP-encoded end-effector images
@@ -962,7 +962,7 @@ class VaceWanModel(torch.nn.Module):
                 nn.Linear(1280, embodiment_dim * 2),  # CLIP image features are typically 1280-dim
                 nn.GELU(),
                 nn.LayerNorm(embodiment_dim * 2),
-                nn.Dropout(0.1),
+                nn.Dropout(0),
                 nn.Linear(embodiment_dim * 2, embodiment_dim),  # Reduce to embodiment_dim
                 nn.LayerNorm(embodiment_dim)
             )
@@ -979,8 +979,8 @@ class VaceWanModel(torch.nn.Module):
             # Task attention projector: [batch, seq_len, task_dim] → [batch, task_dim]
             self.task_attention_projector = nn.MultiheadAttention(
                 embed_dim=task_dim,
-                num_heads=1,  # Adaptive number of heads
-                dropout=0.1,
+                num_heads=2,  # Adaptive number of heads
+                dropout=0,
                 batch_first=True
             )
             self.task_attention_query = nn.Parameter(torch.randn(1, 1, task_dim) * 0.02)  # Learnable query
@@ -989,7 +989,7 @@ class VaceWanModel(torch.nn.Module):
             self.task_mlp_projector = nn.Sequential(
                 nn.Linear(task_dim, compact_dim * 2),
                 nn.GELU(),
-                nn.Dropout(0.1),
+                nn.Dropout(0),
                 nn.Linear(compact_dim * 2, compact_dim),
                 nn.LayerNorm(compact_dim)
             )
@@ -997,8 +997,8 @@ class VaceWanModel(torch.nn.Module):
             # Embodiment attention projector: [batch, seq_len, embodiment_dim] → [batch, embodiment_dim]
             self.embodiment_attention_projector = nn.MultiheadAttention(
                 embed_dim=embodiment_dim,
-                num_heads=1,  # Adaptive number of heads
-                dropout=0.1,
+                num_heads=2,  # Adaptive number of heads
+                dropout=0,
                 batch_first=True
             )
             self.embodiment_attention_query = nn.Parameter(torch.randn(1, 1, embodiment_dim) * 0.02)  # Learnable query
@@ -1007,7 +1007,7 @@ class VaceWanModel(torch.nn.Module):
             self.embodiment_mlp_projector = nn.Sequential(
                 nn.Linear(embodiment_dim, compact_dim * 2),
                 nn.GELU(),
-                nn.Dropout(0.1),
+                nn.Dropout(0),
                 nn.Linear(compact_dim * 2, compact_dim),
                 nn.LayerNorm(compact_dim)
             )
