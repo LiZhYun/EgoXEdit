@@ -276,7 +276,10 @@ class CLSTokenTrajectoryEncoder(torch.nn.Module):
             trajectory_sequence: Object trajectories [batch_size, seq_len, num_objects, 9]
                                Or [batch_size, seq_len, 9] for single object
             object_ids: Object type IDs (not used in CLS token version)
-            mask: Attention mask [batch_size, seq_len] for valid timesteps
+            mask: Attention mask (optional). Supported formats:
+                 - [batch, seq_len, num_objects, 1]: From data loaders (will be squeezed)
+                 - [batch, seq_len, num_objects]: Standard 3D format
+                 - [batch, seq_len]: Per-timestep (expanded to all objects)
                  
         Returns:
             Fixed-size trajectory representation [batch_size, task_dim]
@@ -300,8 +303,21 @@ class CLSTokenTrajectoryEncoder(torch.nn.Module):
         
         # Extend mask to include CLS token (CLS token is always valid)
         if mask is not None:
-            # Expand mask for multiple objects: [batch, seq_len] -> [batch, seq_len*num_objects]
-            mask_expanded = mask.unsqueeze(-1).expand(-1, -1, num_objects).reshape(batch_size, seq_len * num_objects)
+            # Handle different mask formats
+            if mask.dim() == 4:
+                # Format: [batch, seq_len, num_objects, 1] - squeeze the last dimension
+                mask_squeezed = mask.squeeze(-1)  # [batch, seq_len, num_objects]
+            elif mask.dim() == 3:
+                # Format: [batch, seq_len, num_objects] - already correct
+                mask_squeezed = mask
+            elif mask.dim() == 2:
+                # Format: [batch, seq_len] - expand for num_objects
+                mask_squeezed = mask.unsqueeze(-1).expand(-1, -1, num_objects)  # [batch, seq_len, num_objects]
+            else:
+                raise ValueError(f"Unexpected mask dimensions: {mask.shape}")
+            
+            # Flatten mask: [batch, seq_len, num_objects] -> [batch, seq_len*num_objects]
+            mask_expanded = mask_squeezed.reshape(batch_size, seq_len * num_objects)
             cls_mask = torch.ones(batch_size, 1, device=mask.device, dtype=mask.dtype)
             mask_extended = torch.cat([cls_mask, mask_expanded], dim=1)  # [batch, seq_len*num_objects+1]
         else:
