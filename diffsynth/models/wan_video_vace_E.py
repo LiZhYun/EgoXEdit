@@ -1177,9 +1177,9 @@ class VaceWanModel(torch.nn.Module):
         # Keep task and embodiment features in their natural lower dimensions
         # The first VACE block (block_id=0) will handle projection and fusion
         
-        # Store original low-dimensional features for CLUB loss computation
-        raw_task_features = task_features      # [batch, seq_len, task_dim=512]
-        raw_embodiment_features = embodiment_features  # [batch, seq_len, embodiment_dim=256]
+        # Store CLS token features for CLUB loss computation
+        raw_task_features = task_features      # [batch, task_dim] from SimpleTaskFusion
+        raw_embodiment_features = embodiment_features  # [batch, embodiment_dim] from CLSTokenEmbodimentEncoder
         
         # For backward compatibility with non-task processing, create a fallback context
         if task_features is None and embodiment_features is None:
@@ -1240,45 +1240,24 @@ class VaceWanModel(torch.nn.Module):
         
         # Optionally return intermediate features for CLUB loss computation
         if return_intermediate_features:
-            # Apply two-stage projection for CLUB loss: Attention → Fixed-length → MLP → Compact
+            # CLS token encoders already provide fixed-size features - no additional projection needed
             if self.enable_task_processing and raw_task_features is not None and raw_embodiment_features is not None:
-                # Stage 1: Attention-based sequence pooling to fixed-length representations
-                batch_size = raw_task_features.shape[0]
-                
-                # Task attention pooling: [batch, seq_len, task_dim] → [batch, task_dim]
-                task_query = self.task_attention_query.expand(batch_size, -1, -1)  # [batch, 1, task_dim]
-                task_attended, _ = self.task_attention_projector(
-                    query=task_query,           # [batch, 1, task_dim]
-                    key=raw_task_features,      # [batch, seq_len, task_dim]
-                    value=raw_task_features,    # [batch, seq_len, task_dim]
-                )  # [batch, 1, task_dim]
-                task_fixed_length = task_attended.squeeze(1)  # [batch, task_dim]
-                
-                # Embodiment attention pooling: [batch, seq_len, embodiment_dim] → [batch, embodiment_dim]
-                embodiment_query = self.embodiment_attention_query.expand(batch_size, -1, -1)  # [batch, 1, embodiment_dim]
-                embodiment_attended, _ = self.embodiment_attention_projector(
-                    query=embodiment_query,           # [batch, 1, embodiment_dim]
-                    key=raw_embodiment_features,      # [batch, seq_len, embodiment_dim]
-                    value=raw_embodiment_features,    # [batch, seq_len, embodiment_dim]
-                )  # [batch, 1, embodiment_dim]
-                embodiment_fixed_length = embodiment_attended.squeeze(1)  # [batch, embodiment_dim]
-                
-                # Stage 2: MLP projection to compact dimensions
-                task_compact = self.task_mlp_projector(task_fixed_length)  # [batch, compact_dim]
-                embodiment_compact = self.embodiment_mlp_projector(embodiment_fixed_length)  # [batch, compact_dim]
+                # Features are already fixed-size from CLS token encoders
+                # raw_task_features: [batch, task_dim] from SimpleTaskFusion
+                # raw_embodiment_features: [batch, embodiment_dim] from CLSTokenEmbodimentEncoder
                 
                 # Normalize for stable CLUB loss computation
-                task_compact = torch.nn.functional.normalize(task_compact, p=2, dim=1)
-                embodiment_compact = torch.nn.functional.normalize(embodiment_compact, p=2, dim=1)
+                task_normalized = torch.nn.functional.normalize(raw_task_features, p=2, dim=1)
+                embodiment_normalized = torch.nn.functional.normalize(raw_embodiment_features, p=2, dim=1)
                 
-                print(f"🔧 VACE-E Two-stage projection for CLUB loss:")
-                print(f"   Stage 1 - Attention pooled: task={task_fixed_length.shape}, embodiment={embodiment_fixed_length.shape}")
-                print(f"   Stage 2 - MLP compact: task={task_compact.shape}, embodiment={embodiment_compact.shape}")
+                print(f"🔧 VACE-E CLS token features for CLUB loss:")
+                print(f"   Task features: {task_normalized.shape} (from CLS token fusion)")
+                print(f"   Embodiment features: {embodiment_normalized.shape} (from CLS token encoder)")
                 
-                # Return compact features for CLUB loss computation
-                return hints, task_compact, embodiment_compact
+                # Return normalized CLS token features for CLUB loss computation
+                return hints, task_normalized, embodiment_normalized
             else:
-                # Return original features if projection is not available
+                # Return original features if available
                 return hints, raw_task_features, raw_embodiment_features
         else:
             return hints
