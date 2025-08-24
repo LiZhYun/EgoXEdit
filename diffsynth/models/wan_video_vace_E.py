@@ -787,30 +787,39 @@ class VaceWanAttentionBlock(DiTBlock):
                 # This keeps task and embodiment features less correlated for CLUB loss
                 fused_features = self.task_weight * projected_task + self.embodiment_weight * projected_embodiment  # [batch, dim]
                 
-                # Broadcast fixed-size features to match video sequence length
-                # This allows the video sequence to attend to the same task+embodiment context at each timestep
-                c = fused_features.unsqueeze(1).expand(batch_size, seq_len, model_dim)  # [batch, seq_len, dim]
-                
             elif task_features is not None:
                 # Only task features available
                 projected_task = self.task_to_model_proj(task_features)  # [batch, dim]
-                c = projected_task.unsqueeze(1).expand(batch_size, seq_len, model_dim)  # [batch, seq_len, dim]
                 
             elif embodiment_features is not None:
                 # Only embodiment features available  
                 projected_embodiment = self.embodiment_to_model_proj(embodiment_features)  # [batch, dim]
-                c = projected_embodiment.unsqueeze(1).expand(batch_size, seq_len, model_dim)  # [batch, seq_len, dim]
                 
             # If c is still not set, use the input c (fallback for backward compatibility)
             # This happens when neither task_features nor embodiment_features are provided
             
-            # Cross-attention: video attends to broadcasted task+embodiment features
-            # query: video features [batch, seq_len, dim]
-            # key/value: broadcasted fused features [batch, seq_len, dim]
+            # Memory-efficient cross-attention: video attends to compact task+embodiment features
+            # Instead of broadcasting to full sequence length, use compact features directly
+            # This reduces memory usage from O(seq_len^2) to O(seq_len)
+            
+            # For memory efficiency, we'll use the compact features directly without broadcasting
+            # This means each video token attends to a single shared task+embodiment representation
+            if task_features is not None and embodiment_features is not None:
+                # Use fused features as compact conditioning
+                compact_key_value = fused_features.unsqueeze(1)  # [batch, 1, dim] - single token per batch
+            elif task_features is not None:
+                compact_key_value = projected_task.unsqueeze(1)  # [batch, 1, dim]
+            elif embodiment_features is not None:
+                compact_key_value = projected_embodiment.unsqueeze(1)  # [batch, 1, dim]
+            else:
+                # Fallback: create zero conditioning
+                compact_key_value = torch.zeros(batch_size, 1, model_dim, device=x.device, dtype=x.dtype)
+            
+            # Cross-attention with compact conditioning: much more memory efficient
             task_informed_video, _ = self.task_video_cross_attn(
-                query=x,           # Video features as query [batch, seq_len, dim]
-                key=c,             # Broadcasted fused features as key [batch, seq_len, dim]  
-                value=c            # Broadcasted fused features as value [batch, seq_len, dim]
+                query=x,                    # Video features as query [batch, seq_len, dim]
+                key=compact_key_value,      # Compact task/embodiment as key [batch, 1, dim]  
+                value=compact_key_value     # Compact task/embodiment as value [batch, 1, dim]
             )
             
             # Residual connection and normalization
