@@ -91,202 +91,107 @@ from .wan_video_text_encoder import T5SelfAttention, T5LayerNorm, T5RelativeEmbe
 import torch.nn as nn
 
 
-class WanHandMotionEncoder(torch.nn.Module):
+class CLSTokenMotionEncoder(torch.nn.Module):
     """
-    Dual-Hand Motion Encoder for processing hand pose sequences with gripper states.
+    CLS token-based hand motion encoder for dual-hand robot manipulation.
     
-    This encoder processes sequences of dual-hand motions where each timestep includes:
-    1. Left wrist pose: 9-dimensional vector (3D position + 6D rotation)
-    2. Right wrist pose: 9-dimensional vector (3D position + 6D rotation)
-    3. Left gripper state: binary value (0=closed, 1=open)
-    4. Right gripper state: binary value (0=closed, 1=open)
-    
-    It uses transformer self-attention similar to text encoding but adapted for 
-    continuous motion data with discrete gripper states for both hands.
-    
-    Architecture:
-    - Separate linear projections for left/right wrist poses (9D each)
-    - Embedding layers for left/right gripper states
-    - Hand-specific feature processing and fusion
-    - Cross-hand attention for coordination modeling
-    - Positional embeddings for temporal sequence information
-    - Multi-layer transformer blocks with self-attention
-    - Layer normalization and dropout for regularization
+    Uses a learnable CLS token that attends to the entire motion sequence to create
+    a fixed-size representation. This is simpler and more efficient than full
+    transformer encoding.
     
     Input Format:
-    - Left wrist poses: [batch_size, sequence_length, 9]
-      - 9D = 3D position (x, y, z) + 6D rotation representation
-    - Right wrist poses: [batch_size, sequence_length, 9]
-      - 9D = 3D position (x, y, z) + 6D rotation representation
-    - Left gripper states: [batch_size, sequence_length] or [batch_size, sequence_length, 1]
-      - Binary values: 0 (closed) or 1 (open)
-    - Right gripper states: [batch_size, sequence_length] or [batch_size, sequence_length, 1]
-      - Binary values: 0 (closed) or 1 (open)
+    - Dual-hand motion: [batch_size, sequence_length, 20]
+      - 20D = left_wrist(9) + right_wrist(9) + left_gripper(1) + right_gripper(1)
+    - Legacy single-hand (10D): [wrist(9), gripper(1)] - automatically converted
+    
+    Architecture:
+    - Linear projection of input features to hidden dimension
+    - Learnable CLS token
+    - Multi-head attention from CLS token to sequence
+    - Output projection to task dimension
     
     Output:
-    - Encoded motion features: [batch_size, sequence_length, hidden_dim]
+    - Fixed-size motion representation: [batch_size, task_dim]
     """
     
     def __init__(self,
-                 wrist_pose_dim=9,      # 3D position + 6D rotation per hand
-                 dim=512,              # Hidden dimension
-                 dim_attn=512,         # Attention dimension  
-                 dim_ffn=1024,         # Feed-forward dimension
-                 num_heads=8,          # Number of attention heads
-                 num_layers=6,         # Number of transformer layers (fewer than text)
-                 num_buckets=32,        # Positional embedding buckets
-                 shared_pos=False,      # Whether to share positional embeddings
-                 dropout=0.1,           # Dropout rate
-                 max_seq_len=512,       # Maximum sequence length
-                 gripper_embed_dim=64): # Gripper state embedding dimension per hand
-        super(WanHandMotionEncoder, self).__init__()
-        self.wrist_pose_dim = wrist_pose_dim
-        self.dim = dim
-        self.dim_attn = dim_attn
-        self.dim_ffn = dim_ffn
+                 input_dim=20,          # Input dimension (20D for dual-hand)
+                 hidden_dim=512,        # Hidden dimension
+                 task_dim=512,          # Output task dimension
+                 num_heads=8):          # Number of attention heads
+        super(CLSTokenMotionEncoder, self).__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.task_dim = task_dim
         self.num_heads = num_heads
-        self.num_layers = num_layers
-        self.num_buckets = num_buckets
-        self.shared_pos = shared_pos
-        self.max_seq_len = max_seq_len
-        self.gripper_embed_dim = gripper_embed_dim
-
-        # Left hand wrist pose projection (9D continuous values)
-        self.left_wrist_pose_projection = nn.Sequential(
-            nn.Linear(wrist_pose_dim, dim // 4),
-            nn.GELU(),
-            nn.Linear(dim // 4, dim // 2 - gripper_embed_dim),  # Leave space for gripper embedding
-            nn.LayerNorm(dim // 2 - gripper_embed_dim)
+        
+        # Input projection: project motion features to hidden dimension
+        self.input_projection = nn.Linear(input_dim, hidden_dim)
+        
+        # Learnable CLS token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
+        
+        # Multi-head attention for CLS token to attend to sequence
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=0.0,
+            batch_first=True
         )
         
-        # Right hand wrist pose projection (9D continuous values)
-        self.right_wrist_pose_projection = nn.Sequential(
-            nn.Linear(wrist_pose_dim, dim // 4),
-            nn.GELU(),
-            nn.Linear(dim // 4, dim // 2 - gripper_embed_dim),  # Leave space for gripper embedding
-            nn.LayerNorm(dim // 2 - gripper_embed_dim)
+        # Output projection to task dimension
+        self.output_projection = nn.Sequential(
+            nn.Linear(hidden_dim, task_dim),
+            nn.LayerNorm(task_dim)
         )
         
-        # Left gripper state embedding (binary discrete values)
-        self.left_gripper_state_embedding = nn.Embedding(2, gripper_embed_dim)  # 2 states: open/closed
-        
-        # Right gripper state embedding (binary discrete values) 
-        self.right_gripper_state_embedding = nn.Embedding(2, gripper_embed_dim)  # 2 states: open/closed
-        
-        # Hand-specific fusion layers to combine wrist pose and gripper features for each hand
-        self.left_hand_fusion = nn.Sequential(
-            nn.Linear(dim // 2, dim // 2),
-            nn.GELU(),
-            nn.LayerNorm(dim // 2),
-            nn.Dropout(dropout)
-        )
-        
-        self.right_hand_fusion = nn.Sequential(
-            nn.Linear(dim // 2, dim // 2),
-            nn.GELU(),
-            nn.LayerNorm(dim // 2),
-            nn.Dropout(dropout)
-        )
-        
-        # Dual-hand fusion layer to combine left and right hand features
-        self.dual_hand_fusion = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.GELU(),
-            nn.LayerNorm(dim),
-            nn.Dropout(dropout)
-        )
-        
-        # Positional embedding for temporal sequence
-        self.pos_embedding = T5RelativeEmbedding(
-            num_buckets, num_heads, bidirectional=True) if shared_pos else None
-        
-        # Dropout for regularization
-        self.dropout = nn.Dropout(dropout)
-        
-        # Transformer blocks for processing motion sequences
-        self.blocks = nn.ModuleList([
-            T5SelfAttention(dim, dim_attn, dim_ffn, num_heads, num_buckets,
-                            shared_pos, dropout) for _ in range(num_layers)
-        ])
-        
-        # Final layer normalization
-        self.norm = T5LayerNorm(dim)
-
         # Initialize weights
-        self.apply(init_weights)
-        
-        # Custom initialization for motion projections
-        nn.init.xavier_uniform_(self.left_wrist_pose_projection[0].weight)
-        nn.init.xavier_uniform_(self.left_wrist_pose_projection[2].weight)
-        nn.init.xavier_uniform_(self.right_wrist_pose_projection[0].weight)
-        nn.init.xavier_uniform_(self.right_wrist_pose_projection[2].weight)
-        
-        # Initialize gripper embeddings with small values
-        nn.init.normal_(self.left_gripper_state_embedding.weight, std=0.02)
-        nn.init.normal_(self.right_gripper_state_embedding.weight, std=0.02)
+        nn.init.xavier_uniform_(self.input_projection.weight)
+        nn.init.xavier_uniform_(self.output_projection[0].weight)
 
-    def forward(self, left_wrist_pose_sequence, right_wrist_pose_sequence, left_gripper_state_sequence, right_gripper_state_sequence, mask=None):
+    def forward(self, motion_sequence, mask=None):
         """
-        Forward pass for dual-hand motion encoding.
+        Forward pass using prepended CLS token (BERT/ViT style).
         
         Args:
-            left_wrist_pose_sequence: Left wrist pose sequence [batch_size, seq_len, 9]
-                                    Each pose: [x, y, z, r1, r2, r3, r4, r5, r6]
-            right_wrist_pose_sequence: Right wrist pose sequence [batch_size, seq_len, 9]
-                                     Each pose: [x, y, z, r1, r2, r3, r4, r5, r6]
-            left_gripper_state_sequence: Left gripper states [batch_size, seq_len] or [batch_size, seq_len, 1]
-                                        Binary values: 0 (closed) or 1 (open)
-            right_gripper_state_sequence: Right gripper states [batch_size, seq_len] or [batch_size, seq_len, 1]
-                                         Binary values: 0 (closed) or 1 (open)
+            motion_sequence: Dual-hand motion sequence [batch_size, seq_len, 20]
+                           20D = left_wrist(9) + right_wrist(9) + left_gripper(1) + right_gripper(1)
             mask: Optional attention mask [batch_size, seq_len]
                  1 for valid positions, 0 for padding
                  
         Returns:
-            Encoded motion features [batch_size, seq_len, hidden_dim]
+            Fixed-size motion representation [batch_size, task_dim]
         """
-        batch_size, seq_len = left_wrist_pose_sequence.shape[:2]
+        batch_size, seq_len, _ = motion_sequence.shape
         
-        # Handle gripper state dimensions
-        if len(left_gripper_state_sequence.shape) == 3:
-            left_gripper_state_sequence = left_gripper_state_sequence.squeeze(-1)
-        if len(right_gripper_state_sequence.shape) == 3:
-            right_gripper_state_sequence = right_gripper_state_sequence.squeeze(-1)
+        # Project input to hidden dimension
+        x = self.input_projection(motion_sequence)  # [batch, seq_len, hidden_dim]
         
-        # Ensure gripper states are long integers for embedding
-        left_gripper_state_sequence = left_gripper_state_sequence.long()
-        right_gripper_state_sequence = right_gripper_state_sequence.long()
+        # Prepend CLS token to sequence (BERT/ViT style)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, hidden_dim]
+        x = torch.cat([cls_tokens, x], dim=1)  # [batch, seq_len+1, hidden_dim]
         
-        # Process left hand
-        left_wrist_features = self.left_wrist_pose_projection(left_wrist_pose_sequence)  # [batch, seq_len, dim//2-gripper_dim]
-        left_gripper_features = self.left_gripper_state_embedding(left_gripper_state_sequence)  # [batch, seq_len, gripper_dim]
-        left_hand_features = torch.cat([left_wrist_features, left_gripper_features], dim=-1)  # [batch, seq_len, dim//2]
-        left_hand_features = self.left_hand_fusion(left_hand_features)  # [batch, seq_len, dim//2]
+        # Extend mask to include CLS token (CLS token is always valid)
+        if mask is not None:
+            cls_mask = torch.ones(batch_size, 1, device=mask.device, dtype=mask.dtype)
+            mask = torch.cat([cls_mask, mask], dim=1)  # [batch, seq_len+1]
         
-        # Process right hand
-        right_wrist_features = self.right_wrist_pose_projection(right_wrist_pose_sequence)  # [batch, seq_len, dim//2-gripper_dim]
-        right_gripper_features = self.right_gripper_state_embedding(right_gripper_state_sequence)  # [batch, seq_len, gripper_dim]
-        right_hand_features = torch.cat([right_wrist_features, right_gripper_features], dim=-1)  # [batch, seq_len, dim//2]
-        right_hand_features = self.right_hand_fusion(right_hand_features)  # [batch, seq_len, dim//2]
+        # Self-attention over the entire sequence (CLS + motion tokens)
+        # CLS token attends to all motion tokens and aggregates information
+        x, _ = self.attention(
+            query=x,             # [batch, seq_len+1, hidden_dim]
+            key=x,               # [batch, seq_len+1, hidden_dim] 
+            value=x,             # [batch, seq_len+1, hidden_dim]
+            key_padding_mask=~mask.bool() if mask is not None else None
+        )
         
-        # Combine left and right hand features
-        dual_hand_features = torch.cat([left_hand_features, right_hand_features], dim=-1)  # [batch, seq_len, dim]
+        # Extract only the CLS token representation
+        cls_repr = x[:, 0]  # [batch, hidden_dim] - first token is CLS
         
-        # Fuse combined dual-hand features
-        x = self.dual_hand_fusion(dual_hand_features)
-        x = self.dropout(x)
+        # Project to task dimension
+        motion_repr = self.output_projection(cls_repr)  # [batch, task_dim]
         
-        # Generate positional embeddings if using shared position
-        pos_bias = self.pos_embedding(x.size(1), x.size(1)) if self.shared_pos else None
-        
-        # Process through transformer blocks
-        for block in self.blocks:
-            x = block(x, mask=mask, pos_bias=pos_bias)
-        
-        # Final normalization
-        x = self.norm(x)
-        x = self.dropout(x)
-        
-        return x
+        return motion_repr
     
     @staticmethod
     def state_dict_converter():
@@ -306,140 +211,118 @@ class WanHandMotionEncoderStateDictConverter:
         return state_dict
 
 
-class WanObjectTrajectoryEncoder(torch.nn.Module):
+class CLSTokenTrajectoryEncoder(torch.nn.Module):
     """
-    Object Trajectory Encoder for processing object pose sequences.
+    CLS token-based object trajectory encoder.
     
-    Similar to hand motion encoder but specifically designed for object trajectories.
-    Objects also use 9D representation (3D position + 6D rotation) but may have
-    different temporal patterns and require different processing.
+    Uses a learnable CLS token that attends to object trajectory sequences to create
+    a fixed-size representation. Handles multiple objects by flattening the trajectory
+    sequence across objects and time.
     
-    This encoder can handle multiple objects by processing their trajectories
-    independently and then aggregating the features.
+    Input Format:
+    - Object trajectories: [batch_size, seq_len, num_objects, 9]
+      - 9D = 3D position + 6D rotation per object
+    
+    Architecture:
+    - Linear projection of trajectory features
+    - Learnable CLS token
+    - Multi-head attention from CLS token to flattened sequence
+    - Output projection to task dimension
+    
+    Output:
+    - Fixed-size trajectory representation: [batch_size, task_dim]
     """
     
     def __init__(self,
                  input_dim=9,           # 3D position + 6D rotation per object
-                 dim=512,              # Hidden dimension
-                 dim_attn=512,         # Attention dimension
-                 dim_ffn=1024,         # Feed-forward dimension
-                 num_heads=8,          # Number of attention heads
-                 num_layers=6,          # Fewer layers than hand motion (objects simpler)
-                 num_buckets=32,        # Positional embedding buckets
-                 shared_pos=False,      # Whether to share positional embeddings
-                 dropout=0.1,           # Dropout rate
-                 max_seq_len=512,       # Maximum sequence length
-                 max_objects=10):       # Maximum number of objects
-        super(WanObjectTrajectoryEncoder, self).__init__()
+                 hidden_dim=512,        # Hidden dimension
+                 task_dim=512,          # Output task dimension
+                 num_heads=8):          # Number of attention heads
+        super(CLSTokenTrajectoryEncoder, self).__init__()
         self.input_dim = input_dim
-        self.dim = dim
-        self.dim_attn = dim_attn
-        self.dim_ffn = dim_ffn
+        self.hidden_dim = hidden_dim
+        self.task_dim = task_dim
         self.num_heads = num_heads
-        self.num_layers = num_layers
-        self.num_buckets = num_buckets
-        self.shared_pos = shared_pos
-        self.max_seq_len = max_seq_len
-        self.max_objects = max_objects
-
-        # Object trajectory projection
-        self.trajectory_projection = nn.Sequential(
-            nn.Linear(input_dim, dim // 2),
-            nn.GELU(),
-            nn.Linear(dim // 2, dim),
-            nn.LayerNorm(dim)
+        
+        # Input projection: project trajectory features to hidden dimension
+        self.input_projection = nn.Linear(input_dim, hidden_dim)
+        
+        # Learnable CLS token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
+        
+        # Multi-head attention for CLS token to attend to sequence
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=0.0,
+            batch_first=True
         )
         
-        # Object type embedding (to distinguish different objects)
-        self.object_type_embedding = nn.Embedding(max_objects, dim)
+        # Output projection to task dimension
+        self.output_projection = nn.Sequential(
+            nn.Linear(hidden_dim, task_dim),
+            nn.LayerNorm(task_dim)
+        )
         
-        # Positional embedding for temporal sequence
-        self.pos_embedding = T5RelativeEmbedding(
-            num_buckets, num_heads, bidirectional=True) if shared_pos else None
-        
-        # Dropout for regularization
-        self.dropout = nn.Dropout(dropout)
-        
-        # Transformer blocks for processing trajectories
-        self.blocks = nn.ModuleList([
-            T5SelfAttention(dim, dim_attn, dim_ffn, num_heads, num_buckets,
-                            shared_pos, dropout) for _ in range(num_layers)
-        ])
-        
-        # Final layer normalization
-        self.norm = T5LayerNorm(dim)
-
         # Initialize weights
-        self.apply(init_weights)
-        
-        # Custom initialization
-        nn.init.xavier_uniform_(self.trajectory_projection[0].weight)
-        nn.init.xavier_uniform_(self.trajectory_projection[2].weight)
+        nn.init.xavier_uniform_(self.input_projection.weight)
+        nn.init.xavier_uniform_(self.output_projection[0].weight)
 
     def forward(self, trajectory_sequence, object_ids=None, mask=None):
         """
-        Forward pass for object trajectory encoding.
+        Forward pass using prepended CLS token (BERT/ViT style).
         
         Args:
             trajectory_sequence: Object trajectories [batch_size, seq_len, num_objects, 9]
                                Or [batch_size, seq_len, 9] for single object
-            object_ids: Object type IDs [batch_size, num_objects] or [batch_size, 1]
-            mask: Attention mask [batch_size, seq_len, num_objects] or [batch_size, seq_len]
+            object_ids: Object type IDs (not used in CLS token version)
+            mask: Attention mask [batch_size, seq_len] for valid timesteps
                  
         Returns:
-            Encoded trajectory features [batch_size, seq_len, hidden_dim]
+            Fixed-size trajectory representation [batch_size, task_dim]
         """
         batch_size, seq_len = trajectory_sequence.shape[:2]
         
         # Handle single object case
         if len(trajectory_sequence.shape) == 3:
             trajectory_sequence = trajectory_sequence.unsqueeze(2)  # Add object dimension
-            if object_ids is None:
-                object_ids = torch.zeros(batch_size, 1, dtype=torch.long, device=trajectory_sequence.device)
-            if mask is not None and len(mask.shape) == 2:
-                mask = mask.unsqueeze(2)
         
+        # Flatten trajectory sequence: [batch, seq_len, num_objects, 9] -> [batch, seq_len*num_objects, 9]
         num_objects = trajectory_sequence.shape[2]
+        traj_flat = trajectory_sequence.reshape(batch_size, seq_len * num_objects, -1)
         
-        # Default object IDs if not provided
-        if object_ids is None:
-            object_ids = torch.arange(num_objects, device=trajectory_sequence.device).unsqueeze(0).expand(batch_size, -1)
+        # Project input to hidden dimension
+        x = self.input_projection(traj_flat)  # [batch, seq_len*num_objects, hidden_dim]
         
-        # Project trajectories to hidden dimension
-        # Reshape to [batch_size, seq_len * num_objects, 9]
-        traj_reshaped = trajectory_sequence.reshape(batch_size, seq_len * num_objects, -1)
-        x = self.trajectory_projection(traj_reshaped)
+        # Prepend CLS token to sequence (BERT/ViT style)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, hidden_dim]
+        x = torch.cat([cls_tokens, x], dim=1)  # [batch, seq_len*num_objects+1, hidden_dim]
         
-        # Add object type embeddings
-        # Expand object_ids to match sequence length
-        obj_ids_expanded = object_ids.unsqueeze(1).expand(-1, seq_len, -1).reshape(batch_size, seq_len * num_objects)
-        obj_embeddings = self.object_type_embedding(obj_ids_expanded)
-        x = x + obj_embeddings
-        
-        x = self.dropout(x)
-        
-        # Reshape mask if provided
+        # Extend mask to include CLS token (CLS token is always valid)
         if mask is not None:
-            mask = mask.reshape(batch_size, seq_len * num_objects)
+            # Expand mask for multiple objects: [batch, seq_len] -> [batch, seq_len*num_objects]
+            mask_expanded = mask.unsqueeze(-1).expand(-1, -1, num_objects).reshape(batch_size, seq_len * num_objects)
+            cls_mask = torch.ones(batch_size, 1, device=mask.device, dtype=mask.dtype)
+            mask_extended = torch.cat([cls_mask, mask_expanded], dim=1)  # [batch, seq_len*num_objects+1]
+        else:
+            mask_extended = None
         
-        # Generate positional embeddings
-        pos_bias = self.pos_embedding(x.size(1), x.size(1)) if self.shared_pos else None
+        # Self-attention over the entire sequence (CLS + trajectory tokens)
+        # CLS token attends to all trajectory tokens and aggregates information
+        x, _ = self.attention(
+            query=x,             # [batch, seq_len*num_objects+1, hidden_dim]
+            key=x,               # [batch, seq_len*num_objects+1, hidden_dim] 
+            value=x,             # [batch, seq_len*num_objects+1, hidden_dim]
+            key_padding_mask=~mask_extended.bool() if mask_extended is not None else None
+        )
         
-        # Process through transformer blocks
-        for block in self.blocks:
-            x = block(x, mask=mask, pos_bias=pos_bias)
+        # Extract only the CLS token representation
+        cls_repr = x[:, 0]  # [batch, hidden_dim] - first token is CLS
         
-        # Final normalization
-        x = self.norm(x)
-        x = self.dropout(x)
+        # Project to task dimension
+        trajectory_repr = self.output_projection(cls_repr)  # [batch, task_dim]
         
-        # Aggregate across objects (mean pooling)
-        # Reshape back to [batch_size, seq_len, num_objects, hidden_dim]
-        x = x.reshape(batch_size, seq_len, num_objects, self.dim)
-        # Mean pooling across objects
-        x = x.mean(dim=2)  # [batch_size, seq_len, hidden_dim]
-        
-        return x
+        return trajectory_repr
     
     @staticmethod
     def state_dict_converter():
@@ -459,86 +342,137 @@ class WanObjectTrajectoryEncoderStateDictConverter:
         return state_dict
 
 
-class WanTaskFeatureFusion(torch.nn.Module):
+class CLSTokenTextEncoder(torch.nn.Module):
     """
-    Task Feature Fusion Module for combining text, hand motion, and object trajectory features.
+    CLS token-based text encoder for processing variable-length text sequences.
     
-    This module takes the three task components:
-    1. Text description (pre-encoded from prompter)
-    2. Hand motion features (from WanHandMotionEncoder)
-    3. Object trajectory features (from WanObjectTrajectoryEncoder)
+    Uses a learnable CLS token that attends to text embeddings to create
+    a fixed-size representation.
     
-    And fuses them into a unified task representation using cross-attention and projection layers.
+    Input Format:
+    - Text features: [batch_size, seq_len, text_dim] (from T5 or other text encoders)
     
     Architecture:
-    - Text adapter: Projects pre-encoded text to task dimension
-    - Multi-modal attention: Allows different modalities to attend to each other
-    - Feature fusion: Combines all modalities into unified representation
-    - Task projection: Projects to final task embedding dimension
+    - Linear projection of text features (if needed)
+    - Learnable CLS token
+    - Self-attention with prepended CLS token (BERT/ViT style)
+    - Output projection to task dimension
+    
+    Output:
+    - Fixed-size text representation: [batch_size, task_dim]
     """
     
     def __init__(self,
                  text_dim=4096,         # Input text embedding dimension
-                 motion_dim=512,       # Hand motion embedding dimension
-                 trajectory_dim=512,   # Object trajectory embedding dimension
-                 task_dim=512,         # Output task embedding dimension
-                 num_heads=8,          # Number of attention heads for fusion
-                 dropout=0.1):
-        super(WanTaskFeatureFusion, self).__init__()
+                 hidden_dim=512,        # Hidden dimension
+                 task_dim=512,          # Output task dimension
+                 num_heads=8):          # Number of attention heads
+        super(CLSTokenTextEncoder, self).__init__()
         self.text_dim = text_dim
-        self.motion_dim = motion_dim
-        self.trajectory_dim = trajectory_dim
+        self.hidden_dim = hidden_dim
         self.task_dim = task_dim
         self.num_heads = num_heads
         
-        # Text adapter to match dimensions
-        self.text_adapter = nn.Sequential(
-            nn.Linear(text_dim, task_dim),
-            nn.GELU(),
-            nn.LayerNorm(task_dim),
-            nn.Dropout(dropout)
-        )
+        # Input projection: project text features to hidden dimension
+        self.input_projection = nn.Linear(text_dim, hidden_dim)
         
-        # Motion adapter to match dimensions
-        self.motion_adapter = nn.Sequential(
-            nn.Linear(motion_dim, task_dim),
-            nn.GELU(),
-            nn.LayerNorm(task_dim),
-            nn.Dropout(dropout)
-        )
+        # Learnable CLS token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
         
-        # Trajectory adapter to match dimensions
-        self.trajectory_adapter = nn.Sequential(
-            nn.Linear(trajectory_dim, task_dim),
-            nn.GELU(),
-            nn.LayerNorm(task_dim),
-            nn.Dropout(dropout)
-        )
-        
-        # Multi-modal cross-attention for feature fusion
-        self.cross_attention = nn.MultiheadAttention(
-            embed_dim=task_dim,
+        # Multi-head attention for CLS token processing
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
             num_heads=num_heads,
-            dropout=dropout,
+            dropout=0.0,
             batch_first=True
         )
         
-        # Layer norms for residual connections
-        self.norm1 = nn.LayerNorm(task_dim)
-        self.norm2 = nn.LayerNorm(task_dim)
-        self.norm3 = nn.LayerNorm(task_dim)
-        
-        # Feed-forward network for final fusion
-        self.fusion_ffn = nn.Sequential(
-            nn.Linear(task_dim * 3, task_dim * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(task_dim * 2, task_dim),
+        # Output projection to task dimension
+        self.output_projection = nn.Sequential(
+            nn.Linear(hidden_dim, task_dim),
             nn.LayerNorm(task_dim)
         )
         
-        # Task type embeddings to distinguish modalities
-        self.modality_embeddings = nn.Parameter(torch.randn(3, task_dim) * 0.02)
+        # Initialize weights
+        nn.init.xavier_uniform_(self.input_projection.weight)
+        nn.init.xavier_uniform_(self.output_projection[0].weight)
+
+    def forward(self, text_features, mask=None):
+        """
+        Forward pass using prepended CLS token (BERT/ViT style).
+        
+        Args:
+            text_features: Text embeddings [batch_size, seq_len, text_dim]
+                          From T5 or other text encoders
+            mask: Optional attention mask [batch_size, seq_len]
+                 1 for valid positions, 0 for padding
+                 
+        Returns:
+            Fixed-size text representation [batch_size, task_dim]
+        """
+        batch_size, seq_len, _ = text_features.shape
+        
+        # Project input to hidden dimension
+        x = self.input_projection(text_features)  # [batch, seq_len, hidden_dim]
+        
+        # Prepend CLS token to sequence (BERT/ViT style)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, hidden_dim]
+        x = torch.cat([cls_tokens, x], dim=1)  # [batch, seq_len+1, hidden_dim]
+        
+        # Extend mask to include CLS token (CLS token is always valid)
+        if mask is not None:
+            cls_mask = torch.ones(batch_size, 1, device=mask.device, dtype=mask.dtype)
+            mask = torch.cat([cls_mask, mask], dim=1)  # [batch, seq_len+1]
+        
+        # Self-attention over the entire sequence (CLS + text tokens)
+        # CLS token attends to all text tokens and aggregates information
+        x, _ = self.attention(
+            query=x,             # [batch, seq_len+1, hidden_dim]
+            key=x,               # [batch, seq_len+1, hidden_dim] 
+            value=x,             # [batch, seq_len+1, hidden_dim]
+            key_padding_mask=~mask.bool() if mask is not None else None
+        )
+        
+        # Extract only the CLS token representation
+        cls_repr = x[:, 0]  # [batch, hidden_dim] - first token is CLS
+        
+        # Project to task dimension
+        text_repr = self.output_projection(cls_repr)  # [batch, task_dim]
+        
+        return text_repr
+
+
+class SimpleTaskFusion(torch.nn.Module):
+    """
+    Simple MLP-based task feature fusion for combining CLS token outputs.
+    
+    Takes the CLS token outputs from different encoders:
+    1. Text features (processed by text encoder or from prompter)  
+    2. Motion features (from CLSTokenMotionEncoder)
+    3. Trajectory features (from CLSTokenTrajectoryEncoder)
+    
+    And fuses them using a simple MLP concatenation + projection approach.
+    
+    Architecture:
+    - Optional text projection: Project text features to common dimension
+    - Concatenation: Combine all available features
+    - MLP projection: Simple feedforward network to fuse features
+    - Output: Fixed-size task representation
+    """
+    
+    def __init__(self,
+                 task_dim=512):         # Common task dimension for all CLS token outputs
+        super(SimpleTaskFusion, self).__init__()
+        self.task_dim = task_dim
+        
+        # Fusion MLP - takes concatenated CLS token features and projects to task dimension
+        # Input size: task_dim (text) + task_dim (motion) + task_dim (trajectory) = 3 * task_dim
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(3 * task_dim, task_dim * 2),
+            nn.GELU(),
+            nn.Linear(task_dim * 2, task_dim),
+            nn.LayerNorm(task_dim)
+        )
         
         # Initialize weights
         self._init_weights()
@@ -554,105 +488,188 @@ class WanTaskFeatureFusion(torch.nn.Module):
     def forward(self, text_features=None, motion_features=None, trajectory_features=None, 
                 text_mask=None, motion_mask=None, trajectory_mask=None):
         """
-        Forward pass for task feature fusion.
+        Forward pass for simple task feature fusion using concatenation + MLP.
         
         Args:
-            text_features: Text embeddings [batch_size, text_seq_len, text_dim]
-            motion_features: Hand motion features [batch_size, motion_seq_len, motion_dim]
-            trajectory_features: Object trajectory features [batch_size, traj_seq_len, trajectory_dim]
-            text_mask: Text attention mask [batch_size, text_seq_len]
-            motion_mask: Motion attention mask [batch_size, motion_seq_len]
-            trajectory_mask: Trajectory attention mask [batch_size, traj_seq_len]
+            text_features: Text features [batch_size, task_dim] (from CLS token text encoder)
+            motion_features: Motion features [batch_size, task_dim] (from CLS token motion encoder)
+            trajectory_features: Trajectory features [batch_size, task_dim] (from CLS token trajectory encoder)
+            text_mask: Not used in simple fusion
+            motion_mask: Not used in simple fusion  
+            trajectory_mask: Not used in simple fusion
             
         Returns:
-            Fused task features [batch_size, total_seq_len, task_dim]
+            Fused task features [batch_size, task_dim]
         """
-        fused_features = []
-        masks = []
+        features_to_concat = []
         
-        # Process text features
+        # Determine batch size from available features
+        batch_size = None
         if text_features is not None:
-            text_adapted = self.text_adapter(text_features)
-            text_adapted = text_adapted + self.modality_embeddings[0]  # Add modality embedding
-            text_adapted = self.norm1(text_adapted)
-            fused_features.append(text_adapted)
-            if text_mask is not None:
-                masks.append(text_mask)
-        
-        # Process motion features  
-        if motion_features is not None:
-            motion_adapted = self.motion_adapter(motion_features)
-            motion_adapted = motion_adapted + self.modality_embeddings[1]  # Add modality embedding
-            motion_adapted = self.norm2(motion_adapted)
-            fused_features.append(motion_adapted)
-            if motion_mask is not None:
-                masks.append(motion_mask)
-        
-        # Process trajectory features
-        if trajectory_features is not None:
-            trajectory_adapted = self.trajectory_adapter(trajectory_features)
-            trajectory_adapted = trajectory_adapted + self.modality_embeddings[2]  # Add modality embedding
-            trajectory_adapted = self.norm3(trajectory_adapted)
-            fused_features.append(trajectory_adapted)
-            if trajectory_mask is not None:
-                # Handle trajectory mask dimensions (may have extra object dimension)
-                if len(trajectory_mask.shape) == 3:
-                    # [batch_size, seq_len, num_objects] -> [batch_size, seq_len] (aggregate across objects)
-                    trajectory_mask_2d = trajectory_mask.any(dim=-1)  # True if any object is valid at this timestep
-                else:
-                    trajectory_mask_2d = trajectory_mask
-                masks.append(trajectory_mask_2d)
-        
-        if not fused_features:
+            batch_size = text_features.shape[0]
+        elif motion_features is not None:
+            batch_size = motion_features.shape[0]
+        elif trajectory_features is not None:
+            batch_size = trajectory_features.shape[0]
+        else:
             raise ValueError("At least one of text_features, motion_features, or trajectory_features must be provided")
         
-        # Concatenate all features along sequence dimension
-        if len(fused_features) == 1:
-            task_features = fused_features[0]
+        # Text features (already from CLS token encoder)
+        if text_features is not None:
+            features_to_concat.append(text_features)  # [batch_size, task_dim]
         else:
-            task_features = torch.cat(fused_features, dim=1)  # [batch_size, total_seq_len, task_dim]
+            # Use zero padding when modality is missing
+            zero_text = torch.zeros(batch_size, self.task_dim, device=next(self.parameters()).device)
+            features_to_concat.append(zero_text)
         
-        # Apply cross-attention for inter-modality fusion
-        # Use task_features as query, key, and value for self-attention across modalities
-        if len(fused_features) > 1:
-            # Create attention mask if masks are provided
-            attention_mask = None
-            if masks:
-                attention_mask = torch.cat(masks, dim=1) if len(masks) > 1 else masks[0]
-                # Convert to attention mask format (True for positions to attend to)
-                attention_mask = attention_mask.bool()
-            
-            # Self-attention across all modalities
-            attended_features, _ = self.cross_attention(
-                task_features, task_features, task_features,
-                key_padding_mask=~attention_mask if attention_mask is not None else None
-            )
-            task_features = task_features + attended_features  # Residual connection
+        # Motion features (already from CLS token encoder)
+        if motion_features is not None:
+            features_to_concat.append(motion_features)  # [batch_size, task_dim]
+        else:
+            # Use zero padding when modality is missing
+            zero_motion = torch.zeros(batch_size, self.task_dim, device=next(self.parameters()).device)
+            features_to_concat.append(zero_motion)
         
-        return task_features
+        # Trajectory features (already from CLS token encoder)
+        if trajectory_features is not None:
+            features_to_concat.append(trajectory_features)  # [batch_size, task_dim]
+        else:
+            # Use zero padding when modality is missing
+            zero_trajectory = torch.zeros(batch_size, self.task_dim, device=next(self.parameters()).device)
+            features_to_concat.append(zero_trajectory)
+        
+        # Concatenate all features
+        concatenated = torch.cat(features_to_concat, dim=-1)  # [batch_size, 3 * task_dim]
+        
+        # Apply fusion MLP
+        fused_task_features = self.fusion_mlp(concatenated)  # [batch_size, task_dim]
+        
+        return fused_task_features
+
+
+class CLSTokenEmbodimentEncoder(torch.nn.Module):
+    """
+    CLS token-based embodiment encoder for end-effector images.
+    
+    Uses a learnable CLS token that attends to CLIP-encoded image features to create
+    a fixed-size embodiment representation.
+    
+    Input Format:
+    - CLIP features: [batch_size, seq_len, clip_dim] (e.g., 257, 1280 for CLIP-ViT-H-14)
+    
+    Architecture:
+    - Linear projection of CLIP features
+    - Learnable CLS token
+    - Self-attention with prepended CLS token (BERT/ViT style)
+    - Output projection to embodiment dimension
+    
+    Output:
+    - Fixed-size embodiment representation: [batch_size, embodiment_dim]
+    """
+    
+    def __init__(self,
+                 clip_dim=1280,         # CLIP feature dimension
+                 hidden_dim=512,        # Hidden dimension
+                 embodiment_dim=512,    # Output embodiment dimension
+                 num_heads=8):          # Number of attention heads
+        super(CLSTokenEmbodimentEncoder, self).__init__()
+        self.clip_dim = clip_dim
+        self.hidden_dim = hidden_dim
+        self.embodiment_dim = embodiment_dim
+        self.num_heads = num_heads
+        
+        # Input projection: project CLIP features to hidden dimension
+        self.input_projection = nn.Linear(clip_dim, hidden_dim)
+        
+        # Learnable CLS token
+        self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02)
+        
+        # Multi-head attention for CLS token processing
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=0.0,
+            batch_first=True
+        )
+        
+        # Output projection to embodiment dimension
+        self.output_projection = nn.Sequential(
+            nn.Linear(hidden_dim, embodiment_dim),
+            nn.LayerNorm(embodiment_dim)
+        )
+        
+        # Initialize weights
+        nn.init.xavier_uniform_(self.input_projection.weight)
+        nn.init.xavier_uniform_(self.output_projection[0].weight)
+
+    def forward(self, clip_features, mask=None):
+        """
+        Forward pass using prepended CLS token (BERT/ViT style).
+        
+        Args:
+            clip_features: CLIP-encoded image features [batch_size, seq_len, clip_dim]
+                          Usually [batch_size, 257, 1280] for CLIP-ViT-H-14
+            mask: Optional attention mask [batch_size, seq_len]
+                 1 for valid positions, 0 for padding
+                 
+        Returns:
+            Fixed-size embodiment representation [batch_size, embodiment_dim]
+        """
+        batch_size, seq_len, _ = clip_features.shape
+        
+        # Project input to hidden dimension
+        x = self.input_projection(clip_features)  # [batch, seq_len, hidden_dim]
+        
+        # Prepend CLS token to sequence (BERT/ViT style)
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # [batch, 1, hidden_dim]
+        x = torch.cat([cls_tokens, x], dim=1)  # [batch, seq_len+1, hidden_dim]
+        
+        # Extend mask to include CLS token (CLS token is always valid)
+        if mask is not None:
+            cls_mask = torch.ones(batch_size, 1, device=mask.device, dtype=mask.dtype)
+            mask = torch.cat([cls_mask, mask], dim=1)  # [batch, seq_len+1]
+        
+        # Self-attention over the entire sequence (CLS + CLIP tokens)
+        # CLS token attends to all CLIP tokens and aggregates information
+        x, _ = self.attention(
+            query=x,             # [batch, seq_len+1, hidden_dim]
+            key=x,               # [batch, seq_len+1, hidden_dim] 
+            value=x,             # [batch, seq_len+1, hidden_dim]
+            key_padding_mask=~mask.bool() if mask is not None else None
+        )
+        
+        # Extract only the CLS token representation
+        cls_repr = x[:, 0]  # [batch, hidden_dim] - first token is CLS
+        
+        # Project to embodiment dimension
+        embodiment_repr = self.output_projection(cls_repr)  # [batch, embodiment_dim]
+        
+        return embodiment_repr
 
 
 class VaceWanAttentionBlock(DiTBlock):
     """
-    VACE-enabled attention block that extends the standard DiT block.
+    VACE-enabled attention block with CLS token-based task-embodiment processing.
     
     This block enhances the base DiT attention mechanism with task-embodiment guided video editing:
-    - Processes task features (text, hand motion, object trajectory) alongside video content
-    - Uses cross-attention to align task and video features with different sequence lengths
+    - Processes fixed-size task features (from CLS token fusion) alongside video content
+    - Processes fixed-size embodiment features (from CLS token encoder) alongside video content
+    - Uses broadcasting and cross-attention for task-video alignment
     - Generates editing hints that guide the main model's generation
     - Supports hierarchical editing at different model depths
     
     Architecture:
     - Inherits from DiTBlock for standard attention computation
-    - Block 0: Cross-attention for task-video alignment (handles sequence length mismatch)
+    - Block 0: Project and broadcast fixed-size features, then apply cross-attention
     - All blocks: after_proj layers for skip connection generation
     - Accumulates editing context across multiple blocks
     - Outputs both skip connections and refined editing hints
     
-    The block operates in a cross-modal manner:
-    1. Block 0: Video features attend to task features via cross-attention
-    2. Other blocks: Continue processing accumulated video-aligned context
-    3. All blocks: Generate skip connections for main model integration
+    The block operates with CLS token features:
+    1. Block 0: Project fixed-size features to model dimension, broadcast to sequence length
+    2. Cross-attention: Video features attend to broadcasted task+embodiment context
+    3. Other blocks: Continue processing accumulated video-aligned context
+    4. All blocks: Generate skip connections for main model integration
     """
     
     def __init__(self, has_image_input, dim, num_heads, ffn_dim, eps=1e-6, block_id=0, 
@@ -714,7 +731,7 @@ class VaceWanAttentionBlock(DiTBlock):
 
     def forward(self, c, x, context, t_mod, freqs, task_features=None, embodiment_features=None):
         """
-        Forward pass for VACE attention block.
+        Forward pass for VACE attention block with CLS token features.
         
         Processes editing context through attention mechanism and generates
         hints for integration with the main DiT model.
@@ -725,69 +742,59 @@ class VaceWanAttentionBlock(DiTBlock):
             context: Text conditioning from T5 encoder
             t_mod: Time modulation tensor for temporal consistency
             freqs: Positional frequency embeddings
-            task_features: Raw task features [batch, seq_len, task_dim] (block 0 only)
-            embodiment_features: Raw embodiment features [batch, seq_len, embodiment_dim] (block 0 only)
+            task_features: Fixed-size task features [batch, task_dim] (from CLS token fusion)
+            embodiment_features: Fixed-size embodiment features [batch, embodiment_dim] (from CLS token encoder)
             
         Returns:
             torch.Tensor: Stacked tensor containing [all_previous_hints, skip_connection, refined_context]
             
         Processing Flow:
-        1. Block 0: Project and fuse task+embodiment features, then apply cross-attention
+        1. Block 0: Project and fuse fixed-size task+embodiment features, broadcast to sequence
         2. Other blocks: Extract and process accumulated context
         3. Apply standard DiT attention (self-attention + cross-attention + FFN)
         4. Generate skip connection for main model integration
         5. Accumulate all hints for hierarchical editing control
         """
         if self.block_id == 0:
-            # Block 0: Handle raw task and embodiment features
+            # Block 0: Handle fixed-size task and embodiment features from CLS token encoders
             if task_features is not None and embodiment_features is not None:
-                # Project both features to model dimension for cross-attention
-                projected_task = self.task_to_model_proj(task_features)     # [batch, seq_len, dim]
-                projected_embodiment = self.embodiment_to_model_proj(embodiment_features)  # [batch, seq_len, dim]
+                # Project both features to model dimension
+                projected_task = self.task_to_model_proj(task_features)         # [batch, dim]
+                projected_embodiment = self.embodiment_to_model_proj(embodiment_features)  # [batch, dim]
                 
-                # Align sequence lengths by padding/truncating for fusion
-                batch_size = projected_task.shape[0]
-                task_seq_len = projected_task.shape[1]
-                embodiment_seq_len = projected_embodiment.shape[1]
-                model_dim = projected_task.shape[2]
+                # Get sequence length from main model hidden states
+                batch_size = x.shape[0]
+                seq_len = x.shape[1]
+                model_dim = projected_task.shape[1]
                 
-                if task_seq_len < embodiment_seq_len:
-                    # Pad task features to match embodiment length
-                    padding = projected_task.new_zeros(batch_size, embodiment_seq_len - task_seq_len, model_dim)
-                    projected_task_aligned = torch.cat([projected_task, padding], dim=1)
-                    projected_embodiment_aligned = projected_embodiment
-                elif task_seq_len > embodiment_seq_len:
-                    # Pad embodiment features to match task length
-                    padding = projected_embodiment.new_zeros(batch_size, task_seq_len - embodiment_seq_len, model_dim)
-                    projected_embodiment_aligned = torch.cat([projected_embodiment, padding], dim=1)
-                    projected_task_aligned = projected_task
-                else:
-                    # Same length, no padding needed
-                    projected_task_aligned = projected_task
-                    projected_embodiment_aligned = projected_embodiment
-                
-                # Fuse aligned projected features using learnable weights
+                # Fuse projected features using learnable weights
                 # This keeps task and embodiment features less correlated for CLUB loss
-                c = self.task_weight * projected_task_aligned + self.embodiment_weight * projected_embodiment_aligned
+                fused_features = self.task_weight * projected_task + self.embodiment_weight * projected_embodiment  # [batch, dim]
+                
+                # Broadcast fixed-size features to match video sequence length
+                # This allows the video sequence to attend to the same task+embodiment context at each timestep
+                c = fused_features.unsqueeze(1).expand(batch_size, seq_len, model_dim)  # [batch, seq_len, dim]
                 
             elif task_features is not None:
                 # Only task features available
-                c = self.task_to_model_proj(task_features)
+                projected_task = self.task_to_model_proj(task_features)  # [batch, dim]
+                c = projected_task.unsqueeze(1).expand(batch_size, seq_len, model_dim)  # [batch, seq_len, dim]
                 
             elif embodiment_features is not None:
                 # Only embodiment features available  
-                c = self.embodiment_to_model_proj(embodiment_features)
+                projected_embodiment = self.embodiment_to_model_proj(embodiment_features)  # [batch, dim]
+                c = projected_embodiment.unsqueeze(1).expand(batch_size, seq_len, model_dim)  # [batch, seq_len, dim]
                 
             # If c is still not set, use the input c (fallback for backward compatibility)
             # This happens when neither task_features nor embodiment_features are provided
             
-            # Cross-attention: video attends to fused task+embodiment features
-            # query: video features [batch, video_seq_len, dim]
-            # key/value: fused features [batch, task_seq_len, dim]
+            # Cross-attention: video attends to broadcasted task+embodiment features
+            # query: video features [batch, seq_len, dim]
+            # key/value: broadcasted fused features [batch, seq_len, dim]
             task_informed_video, _ = self.task_video_cross_attn(
-                query=x,           # Video features as query [batch, 1000, dim]
-                key=c,             # Fused features as key [batch, 297, dim]  
-                value=c            # Fused features as value [batch, 297, dim]
+                query=x,           # Video features as query [batch, seq_len, dim]
+                key=c,             # Broadcasted fused features as key [batch, seq_len, dim]  
+                value=c            # Broadcasted fused features as value [batch, seq_len, dim]
             )
             
             # Residual connection and normalization
@@ -916,105 +923,55 @@ class VaceWanModel(torch.nn.Module):
 
         # Task processing components (new for VACE-E)
         if self.enable_task_processing:
-            # Hand motion encoder for processing hand pose sequences
-            # Ensure gripper_embed_dim is reasonable for the given task_dim
-            gripper_embed_dim = min(16, task_dim // 4)  # Use 1/4 of task_dim, max 16
-            self.hand_motion_encoder = WanHandMotionEncoder(
-                wrist_pose_dim=9,           # 3D position + 6D rotation
-                dim=task_dim,          # Match task dimension
-                dim_attn=task_dim,
-                dim_ffn=task_dim * 2,
-                num_heads=max(1, task_dim // 64),  # Adaptive number of heads, minimum 1
-                num_layers=8,          # Fewer layers for motion
-                dropout=0,
-                max_seq_len=motion_seq_len,
-                gripper_embed_dim=gripper_embed_dim
+            # CLS token-based text encoder
+            self.text_encoder = CLSTokenTextEncoder(
+                text_dim=text_dim,         # Input text dimension
+                hidden_dim=task_dim,       # Hidden dimension
+                task_dim=task_dim,         # Output task dimension
+                num_heads=max(1, task_dim // 64)  # Adaptive number of heads
             )
             
-            # Object trajectory encoder for processing object trajectories
-            self.object_trajectory_encoder = WanObjectTrajectoryEncoder(
-                input_dim=9,           # 3D position + 6D rotation
-                dim=task_dim,          # Match task dimension
-                dim_attn=task_dim,
-                dim_ffn=task_dim * 2,
-                num_heads=max(1, task_dim // 64),  # Adaptive number of heads, minimum 1
-                num_layers=6,          # Even fewer layers for trajectories
-                dropout=0,
-                max_seq_len=trajectory_seq_len
+            # CLS token-based hand motion encoder
+            self.hand_motion_encoder = CLSTokenMotionEncoder(
+                input_dim=20,              # 20D dual-hand motion
+                hidden_dim=task_dim,       # Hidden dimension
+                task_dim=task_dim,         # Output task dimension
+                num_heads=max(1, task_dim // 64)  # Adaptive number of heads
             )
             
-            # Task feature fusion module
-            # Adjust num_heads based on task_dim to avoid dimension mismatches
-            fusion_num_heads = min(16, max(1, task_dim // 8))  # Ensure reasonable num_heads
-            self.task_fusion = WanTaskFeatureFusion(
-                text_dim=text_dim,
-                motion_dim=task_dim,
-                trajectory_dim=task_dim,
-                task_dim=task_dim,
-                num_heads=fusion_num_heads,
-                dropout=0
+            # CLS token-based object trajectory encoder
+            self.object_trajectory_encoder = CLSTokenTrajectoryEncoder(
+                input_dim=9,               # 9D object trajectory (3D pos + 6D rot)
+                hidden_dim=task_dim,       # Hidden dimension
+                task_dim=task_dim,         # Output task dimension
+                num_heads=max(1, task_dim // 64)  # Adaptive number of heads
             )
             
-            # Embodiment image adapter for processing CLIP-encoded end-effector images
-            # Converts CLIP features to reduced dimension for better CLUB loss computation
-            # This keeps embodiment features at a lower dimension until projection in block 0
-            self.embodiment_image_adapter = nn.Sequential(
-                nn.Linear(1280, embodiment_dim * 2),  # CLIP image features are typically 1280-dim
-                nn.GELU(),
-                nn.LayerNorm(embodiment_dim * 2),
-                nn.Dropout(0),
-                nn.Linear(embodiment_dim * 2, embodiment_dim),  # Reduce to embodiment_dim
-                nn.LayerNorm(embodiment_dim)
+            # Simple task feature fusion module
+            self.task_fusion = SimpleTaskFusion(
+                task_dim=task_dim          # Common task dimension for all CLS token outputs
+            )
+            
+            # CLS token-based embodiment encoder for CLIP features
+            self.embodiment_encoder = CLSTokenEmbodimentEncoder(
+                clip_dim=1280,             # CLIP ViT-H/14 dimension
+                hidden_dim=embodiment_dim, # Hidden dimension
+                embodiment_dim=embodiment_dim,  # Output embodiment dimension
+                num_heads=max(1, embodiment_dim // 64)  # Adaptive number of heads
             )
             
             # NOTE: task_to_model_proj and fusion weights are now moved to VaceWanAttentionBlock (block_id=0)
             # This allows task and embodiment features to stay in their natural lower dimensions
             # until they need to be projected for cross-attention in the first VACE block
             
-            # Two-stage projection for CLUB loss: Attention → Fixed-length → MLP → Compact
-            # Stage 1: Attention-based sequence pooling to fixed-length representations
-            # Stage 2: MLP projection to compact dimensions for CLUB loss computation
-            compact_dim = 64  # Compact embedding dimension
+
             
-            # Task attention projector: [batch, seq_len, task_dim] → [batch, task_dim]
-            self.task_attention_projector = nn.MultiheadAttention(
-                embed_dim=task_dim,
-                num_heads=2,  # Adaptive number of heads
-                dropout=0,
-                batch_first=True
-            )
-            self.task_attention_query = nn.Parameter(torch.randn(1, 1, task_dim) * 0.02)  # Learnable query
-            
-            # Task MLP projector: [batch, task_dim] → [batch, compact_dim]
-            self.task_mlp_projector = nn.Sequential(
-                nn.Linear(task_dim, compact_dim * 2),
-                nn.GELU(),
-                nn.Dropout(0),
-                nn.Linear(compact_dim * 2, compact_dim),
-                nn.LayerNorm(compact_dim)
-            )
-            
-            # Embodiment attention projector: [batch, seq_len, embodiment_dim] → [batch, embodiment_dim]
-            self.embodiment_attention_projector = nn.MultiheadAttention(
-                embed_dim=embodiment_dim,
-                num_heads=2,  # Adaptive number of heads
-                dropout=0,
-                batch_first=True
-            )
-            self.embodiment_attention_query = nn.Parameter(torch.randn(1, 1, embodiment_dim) * 0.02)  # Learnable query
-            
-            # Embodiment MLP projector: [batch, embodiment_dim] → [batch, compact_dim]
-            self.embodiment_mlp_projector = nn.Sequential(
-                nn.Linear(embodiment_dim, compact_dim * 2),
-                nn.GELU(),
-                nn.Dropout(0),
-                nn.Linear(compact_dim * 2, compact_dim),
-                nn.LayerNorm(compact_dim)
-            )
-            
-            print(f"✅ VACE-E Two-stage projectors initialized:")
-            print(f"   Stage 1 - Attention pooling: task_dim={task_dim}, embodiment_dim={embodiment_dim}")
-            print(f"   Stage 2 - MLP projection: → compact_dim={compact_dim}")
+            print(f"✅ VACE-E CLS token encoders initialized:")
+            print(f"   Text encoder: {text_dim}D → {task_dim}D")
+            print(f"   Motion encoder: 20D → {task_dim}D")
+            print(f"   Trajectory encoder: 9D → {task_dim}D") 
+            print(f"   Embodiment encoder: 1280D → {embodiment_dim}D")
+            print(f"   Task fusion: {task_dim}D + {task_dim}D + {task_dim}D → {task_dim}D")
 
     def forward(
         self, x, vace_context, context, t_mod, freqs,
@@ -1102,39 +1059,53 @@ class VaceWanModel(torch.nn.Module):
              hand_motion_sequence is not None or 
              object_trajectory_sequence is not None)):
             
-            # Process hand motion if available
+            # Process text features if available using CLS token encoder
+            text_cls_features = None
+            if text_features is not None:
+                # Ensure text encoder is on correct device and dtype
+                self.text_encoder = self.text_encoder.to(device=model_device, dtype=model_dtype)
+                
+                # CLS token encoder takes text sequence and outputs fixed-size representation
+                # Expected input shape: [batch, seq_len, text_dim]
+                # Output: [batch, task_dim] - fixed-size representation from CLS token
+                text_cls_features = self.text_encoder(
+                    text_features=text_features,
+                    mask=text_mask
+                )
+            
+            # Process hand motion if available using CLS token encoder
             motion_features = None
             if hand_motion_sequence is not None:
                 # Ensure hand motion encoder is on correct device and dtype
                 self.hand_motion_encoder = self.hand_motion_encoder.to(device=model_device, dtype=model_dtype)
                 
-                # Split dual-hand motion sequence: [left_wrist(9), right_wrist(9), left_gripper(1), right_gripper(1)]
+                # CLS token encoder takes the full 20D dual-hand sequence directly
                 # Expected input shape: [batch, seq_len, 20]
-                left_wrist_poses = hand_motion_sequence[:, :, :9]       # First 9 dims: left wrist pose
-                right_wrist_poses = hand_motion_sequence[:, :, 9:18]    # Next 9 dims: right wrist pose
-                left_gripper_states = hand_motion_sequence[:, :, 18]    # 19th dim: left gripper state
-                right_gripper_states = hand_motion_sequence[:, :, 19]   # 20th dim: right gripper state
-                
+                # Output: [batch, task_dim] - fixed-size representation from CLS token
                 motion_features = self.hand_motion_encoder(
-                    left_wrist_pose_sequence=left_wrist_poses,
-                    right_wrist_pose_sequence=right_wrist_poses,
-                    left_gripper_state_sequence=left_gripper_states,
-                    right_gripper_state_sequence=right_gripper_states,
+                    motion_sequence=hand_motion_sequence,
                     mask=motion_mask
                 )
             
-            # Process object trajectories if available
+            # Process object trajectories if available using CLS token encoder
             trajectory_features = None
             if object_trajectory_sequence is not None:
                 # Ensure object trajectory encoder is on correct device and dtype
                 self.object_trajectory_encoder = self.object_trajectory_encoder.to(device=model_device, dtype=model_dtype)
                 
+                # CLS token encoder takes trajectory sequence and outputs fixed-size representation
+                # Expected input shape: [batch, seq_len, num_objects, 9] or [batch, seq_len, 9]
+                # Output: [batch, task_dim] - fixed-size representation from CLS token
                 trajectory_features = self.object_trajectory_encoder(
-                    trajectory_sequence=object_trajectory_sequence, object_ids=object_ids, mask=trajectory_mask
+                    trajectory_sequence=object_trajectory_sequence, 
+                    object_ids=object_ids, 
+                    mask=trajectory_mask
                 )
             
-            # Fuse all task modalities
+            # Fuse all task modalities using CLS token outputs
             # Ensure all features are on the same device and dtype before fusion
+            if text_cls_features is not None:
+                text_cls_features = text_cls_features.to(device=model_device, dtype=model_dtype)
             if motion_features is not None:
                 motion_features = motion_features.to(device=model_device, dtype=model_dtype)
             if trajectory_features is not None:
@@ -1144,12 +1115,12 @@ class VaceWanModel(torch.nn.Module):
             self.task_fusion = self.task_fusion.to(device=model_device, dtype=model_dtype)
                 
             task_features = self.task_fusion(
-                text_features=text_features,
-                motion_features=motion_features,
-                trajectory_features=trajectory_features,
-                text_mask=text_mask,
-                motion_mask=motion_mask,
-                trajectory_mask=trajectory_mask
+                text_features=text_cls_features,        # Now using CLS token output
+                motion_features=motion_features,         # Already CLS token output
+                trajectory_features=trajectory_features, # Already CLS token output
+                text_mask=text_mask,       # Not used in simple fusion
+                motion_mask=motion_mask,   # Not used in simple fusion
+                trajectory_mask=trajectory_mask  # Not used in simple fusion
             )
             
             # Keep task features in their natural dimension (task_dim)
@@ -1158,12 +1129,16 @@ class VaceWanModel(torch.nn.Module):
         # === EMBODIMENT FEATURE PROCESSING ===
         embodiment_features = None
         if embodiment_image_features is not None:
-            # Ensure embodiment adapter is on correct device and dtype
-            self.embodiment_image_adapter = self.embodiment_image_adapter.to(device=model_device, dtype=model_dtype)
+            # Ensure embodiment encoder is on correct device and dtype
+            self.embodiment_encoder = self.embodiment_encoder.to(device=model_device, dtype=model_dtype)
             
-            # Process end-effector image context
+            # Process end-effector image context using CLS token encoder
             # embodiment_image_features: [batch, 257, 1280] from CLIP
-            embodiment_features = self.embodiment_image_adapter(embodiment_image_features)
+            # Output: [batch, embodiment_dim] - fixed-size representation from CLS token
+            embodiment_features = self.embodiment_encoder(
+                clip_features=embodiment_image_features,
+                mask=None  # CLIP features are typically all valid
+            )
         
         elif vace_context is not None:
             # Fallback to original VACE processing for backward compatibility
