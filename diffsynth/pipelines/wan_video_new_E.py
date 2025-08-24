@@ -1174,8 +1174,8 @@ class WanVideoPipeline(BasePipeline):
                         pipe.dit,
                         vace_layers=vace_e_layers,
                         enable_task_processing=vace_e_task_processing,
-                        embodiment_dim=64,  # Reduced dimension for CLUB loss
-                        task_dim=64  # Reduced task dimension
+                        embodiment_dim=16,  # Reduced dimension for CLUB loss
+                        task_dim=16  # Reduced task dimension
                     )
                     # Move to local device for distributed training
                     pipe.vace_e = pipe.vace_e.to(device=local_device, dtype=torch_dtype)
@@ -1189,8 +1189,8 @@ class WanVideoPipeline(BasePipeline):
                         pipe.dit,
                         vace_layers=vace_e_layers,
                         enable_task_processing=vace_e_task_processing,
-                        embodiment_dim=64,  # Reduced dimension for CLUB loss
-                        task_dim=64  # Reduced task dimension
+                        embodiment_dim=16,  # Reduced dimension for CLUB loss
+                        task_dim=16  # Reduced task dimension
                     )
                     # Ensure VACE-E model is on the correct device
                     pipe.vace_e = pipe.vace_e.to(device=device, dtype=torch_dtype)
@@ -1204,7 +1204,7 @@ class WanVideoPipeline(BasePipeline):
                 # Initialize CLUB estimator for mutual information minimization
                 if vace_e_task_processing:
                     # Both task and embodiment features are projected to main model dimension
-                    feature_dim = 64
+                    feature_dim = 16
                     hidden_size = feature_dim * 2  # Hidden layer size for CLUB networks
                     
                     club_device = local_device if is_distributed else device
