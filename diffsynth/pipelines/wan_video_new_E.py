@@ -648,6 +648,10 @@ class WanVideoPipeline(BasePipeline):
         # Initialize CLUB loss with gradients enabled
         club_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
         club_training_loss = 0.0
+
+        # Initialize contrastive losses
+        task_contrastive_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
+        embodiment_contrastive_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
         
         # Compute CLUB loss if VACE-E features are available and CLUB loss is enabled
         # Ensure all ranks take the same code path
@@ -702,6 +706,41 @@ class WanVideoPipeline(BasePipeline):
                         
                 print(f"Final features for CLUB: task_flat={task_flat.shape} {task_flat.dtype}, embodiment_flat={embodiment_flat.shape} {embodiment_flat.dtype}")
                 
+                # Compute contrastive losses if enabled and features are available
+                if self.enable_contrastive_loss:
+                    
+                    if gathered_task_features is not None and gathered_embodiment_features is not None:
+                        # Get pre-generated labels from inputs
+                        task_labels = inputs.get("task_label", None)
+                        embodiment_labels = inputs.get("embodiment_label", None)
+                        
+                        if task_labels is not None and embodiment_labels is not None:
+                            # Gather features from all GPUs for contrastive loss computation
+                            gathered_task_labels = self.accelerator.gather(task_labels)
+                            gathered_embodiment_labels = self.accelerator.gather(embodiment_labels)
+                            
+                            # Compute task contrastive loss (same tasks should be similar)
+                            task_contrastive_loss = self.compute_contrastive_loss(
+                                gathered_task_features, 
+                                gathered_task_labels,
+                                temperature=self.contrastive_temperature
+                            )
+                            task_contrastive_loss = self.task_contrastive_lambda * task_contrastive_loss
+                            
+                            # Compute embodiment contrastive loss (same embodiments should be similar)
+                            embodiment_contrastive_loss = self.compute_contrastive_loss(
+                                gathered_embodiment_features, 
+                                gathered_embodiment_labels,
+                                temperature=self.contrastive_temperature
+                            )
+                            embodiment_contrastive_loss = self.embodiment_contrastive_lambda * embodiment_contrastive_loss
+                            
+                            print(f"🎯 Contrastive Loss Debug:")
+                            print(f"   Task contrastive loss: {task_contrastive_loss.item():.6f}")
+                            print(f"   Embodiment contrastive loss: {embodiment_contrastive_loss.item():.6f}")
+                            print(f"   Task lambda: {self.task_contrastive_lambda}")
+                            print(f"   Embodiment lambda: {self.embodiment_contrastive_lambda}")
+                            
                 # Initialize CLUB estimator if not already done
                 if self.club_estimator is None:
                     # Get dimensions from reduced features
@@ -739,52 +778,6 @@ class WanVideoPipeline(BasePipeline):
                 print(f"   Lambda: {self.club_lambda}")
                 print(f"   Final club_loss: {club_loss.item():.6f}, requires_grad: {club_loss.requires_grad}")
                 print(f"   Club loss grad_fn: {club_loss.grad_fn}")
-        
-        # Initialize contrastive losses
-        task_contrastive_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
-        embodiment_contrastive_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
-        
-        # Compute contrastive losses if enabled and features are available
-        if (self.enable_contrastive_loss and should_compute_club and 
-            '_current_task_features' in globals() and '_current_embodiment_features' in globals()):
-            
-            # Get features from globals (same as used for CLUB)
-            task_features = globals().get('_current_task_features', None)
-            embodiment_features = globals().get('_current_embodiment_features', None)
-            
-            if task_features is not None and embodiment_features is not None:
-                # Get pre-generated labels from inputs
-                task_labels = inputs.get("task_label", None)
-                embodiment_labels = inputs.get("embodiment_label", None)
-                
-                if task_labels is not None and embodiment_labels is not None:
-                    # Gather features from all GPUs for contrastive loss computation
-                    gathered_task_features = self.accelerator.gather(task_features)
-                    gathered_embodiment_features = self.accelerator.gather(embodiment_features)
-                    gathered_task_labels = self.accelerator.gather(task_labels)
-                    gathered_embodiment_labels = self.accelerator.gather(embodiment_labels)
-                    
-                    # Compute task contrastive loss (same tasks should be similar)
-                    task_contrastive_loss = self.compute_contrastive_loss(
-                        gathered_task_features, 
-                        gathered_task_labels,
-                        temperature=self.contrastive_temperature
-                    )
-                    task_contrastive_loss = self.task_contrastive_lambda * task_contrastive_loss
-                    
-                    # Compute embodiment contrastive loss (same embodiments should be similar)
-                    embodiment_contrastive_loss = self.compute_contrastive_loss(
-                        gathered_embodiment_features, 
-                        gathered_embodiment_labels,
-                        temperature=self.contrastive_temperature
-                    )
-                    embodiment_contrastive_loss = self.embodiment_contrastive_lambda * embodiment_contrastive_loss
-                    
-                    print(f"🎯 Contrastive Loss Debug:")
-                    print(f"   Task contrastive loss: {task_contrastive_loss.item():.6f}")
-                    print(f"   Embodiment contrastive loss: {embodiment_contrastive_loss.item():.6f}")
-                    print(f"   Task lambda: {self.task_contrastive_lambda}")
-                    print(f"   Embodiment lambda: {self.embodiment_contrastive_lambda}")
         
         # Clean up global variables after both CLUB and contrastive computation
         if should_compute_club:
