@@ -136,6 +136,8 @@ class WanTrainingModuleE(DiffusionTrainingModule):
             "use_gradient_checkpointing_offload": self.use_gradient_checkpointing_offload,
             "cfg_merge": False,
             "vace_scale": 1,
+            "task_label": data["task_label"],
+            "embodiment_label": data["embodiment_label"]
         }
         
         # Add standard VACE inputs if available
