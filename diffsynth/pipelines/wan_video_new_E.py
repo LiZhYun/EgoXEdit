@@ -714,7 +714,13 @@ class WanVideoPipeline(BasePipeline):
                         embodiment_labels = inputs.get("embodiment_label", None)
                         
                         if task_labels is not None and embodiment_labels is not None:
-                            # Gather features from all GPUs for contrastive loss computation
+                            # Convert labels to tensors if they aren't already
+                            if not isinstance(task_labels, torch.Tensor):
+                                task_labels = torch.tensor(task_labels, device=self.device, dtype=torch.long)
+                            if not isinstance(embodiment_labels, torch.Tensor):
+                                embodiment_labels = torch.tensor(embodiment_labels, device=self.device, dtype=torch.long)
+                            
+                            # Gather features and labels from all GPUs for contrastive loss computation
                             gathered_task_labels = self.accelerator.gather(task_labels)
                             gathered_embodiment_labels = self.accelerator.gather(embodiment_labels)
                             
