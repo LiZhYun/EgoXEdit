@@ -178,6 +178,53 @@ class VideoDatasetE(torch.utils.data.Dataset):
             raise ValueError(f"No valid episodes found in {base_path} after filtering! Check your data and validation criteria.")
         elif len(self.episodes) < total_episodes * 0.5:
             warnings.warn(f"More than 50% of episodes were filtered out! Only {len(self.episodes)}/{total_episodes} episodes remain.")
+        
+        # Create consistent label mappings for CLIP contrastive loss
+        self._create_label_mappings()
+    
+    def _create_label_mappings(self):
+        """
+        Create consistent label mappings for task prompts and embodiment types.
+        This ensures the same task/embodiment gets the same label across all batches.
+        """
+        # Collect all unique task prompts and embodiment types
+        unique_task_prompts = set()
+        unique_embodiment_types = set()
+        
+        for episode in self.episodes:
+            # Generate task prompt for this episode
+            task_prompt = self.generate_task_prompt(episode['task_name'], episode.get('full_task_name'))
+            unique_task_prompts.add(task_prompt)
+            
+            # Extract embodiment type from task name
+            task_name = episode['task_name']
+            if task_name.startswith('1'):
+                embodiment_type = 'human'
+            else:
+                embodiment_type = 'robot'
+            unique_embodiment_types.add(embodiment_type)
+        
+        # Create consistent mappings
+        self.task_prompt_to_label = {prompt: idx for idx, prompt in enumerate(sorted(unique_task_prompts))}
+        self.embodiment_type_to_label = {etype: idx for idx, etype in enumerate(sorted(unique_embodiment_types))}
+        
+        print(f"📊 CLIP Label Mappings Created:")
+        print(f"   Unique task prompts: {len(self.task_prompt_to_label)}")
+        print(f"   Task prompt samples: {list(self.task_prompt_to_label.keys())[:3]}")
+        print(f"   Unique embodiment types: {len(self.embodiment_type_to_label)}")
+        print(f"   Embodiment type mapping: {self.embodiment_type_to_label}")
+    
+    def get_task_label(self, task_prompt):
+        """Get consistent task label for a given task prompt."""
+        return self.task_prompt_to_label.get(task_prompt, 0)  # Default to 0 if not found
+    
+    def get_embodiment_label(self, task_name):
+        """Get consistent embodiment label for a given task name."""
+        if task_name.startswith('1'):
+            embodiment_type = 'human'
+        else:
+            embodiment_type = 'robot'
+        return self.embodiment_type_to_label.get(embodiment_type, 0)  # Default to 0 if not found
     
     def _validate_video_file(self, video_path, episode_name, video_type="Video"):
         """Comprehensive video file validation using multiple methods."""
@@ -872,11 +919,15 @@ class VideoDatasetE(torch.utils.data.Dataset):
         episode_path = episode['episode_path']
         episode_name = episode['episode_name']
         task_name = episode['task_name']
+        task_prompt = self.generate_task_prompt(task_name)
         
         data = {
             'task_name': task_name,
             'episode_name': episode_name,
-            'prompt': self.generate_task_prompt(task_name),
+            'prompt': task_prompt,
+            # Add CLIP labels for contrastive learning
+            'task_label': self.get_task_label(task_prompt),
+            'embodiment_label': self.get_embodiment_label(task_name),
         }
         
         # Load videos with correct distinction

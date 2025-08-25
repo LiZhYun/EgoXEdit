@@ -251,6 +251,14 @@ if __name__ == "__main__":
     parser.add_argument("--enable_club_loss", action="store_true", default=True, help="Enable CLUB loss for mutual information minimization")
     parser.add_argument("--disable_club_loss", action="store_true", help="Disable CLUB loss (overrides enable_club_loss)")
 
+    # CLIP contrastive loss arguments
+    # Contrastive loss configuration
+    parser.add_argument("--contrastive_temperature", type=float, default=0.07, help="Temperature parameter for contrastive loss")
+    parser.add_argument("--task_contrastive_lambda", type=float, default=1.0, help="Weight for task contrastive loss")
+    parser.add_argument("--embodiment_contrastive_lambda", type=float, default=1.0, help="Weight for embodiment contrastive loss")
+    parser.add_argument("--enable_contrastive_loss", action="store_true", default=True, help="Enable contrastive loss")
+    parser.add_argument("--disable_contrastive_loss", action="store_true", help="Disable contrastive loss (overrides enable_contrastive_loss)")
+
     parser.add_argument("--resume_path", type=str, default=None, help="Resume training from checkpoint")
     
     args = parser.parse_args()
@@ -334,6 +342,22 @@ if __name__ == "__main__":
         training_steps=args.club_training_steps,
         club_lr=args.club_lr,
         enable=enable_club
+    )
+    
+    # Configure contrastive loss
+    enable_contrastive = args.enable_contrastive_loss and not args.disable_contrastive_loss
+    print(f"\n🎯 Contrastive Loss Configuration:")
+    print(f"   Enabled: {enable_contrastive}")
+    if enable_contrastive:
+        print(f"   Temperature: {args.contrastive_temperature}")
+        print(f"   Task lambda weight: {args.task_contrastive_lambda}")
+        print(f"   Embodiment lambda weight: {args.embodiment_contrastive_lambda}")
+    
+    model.pipe.configure_contrastive_loss(
+        temperature=args.contrastive_temperature,
+        task_lambda=args.task_contrastive_lambda,
+        embodiment_lambda=args.embodiment_contrastive_lambda,
+        enable=enable_contrastive
     )
     model_logger = ModelLogger(
         args.output_path,
