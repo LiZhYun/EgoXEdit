@@ -708,8 +708,6 @@ class WanVideoPipeline(BasePipeline):
                 
                 # Compute contrastive losses if enabled and features are available
                 if self.enable_contrastive_loss:
-                    print(f"🔍 CLUB Debug - Contrastive loss computation started")
-
                     if gathered_task_features is not None and gathered_embodiment_features is not None:
                         # Get pre-generated labels from inputs
                         task_labels = inputs.get("task_label", None)

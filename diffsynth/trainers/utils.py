@@ -501,7 +501,7 @@ def video_collate_fn(batch, min_value=-1, max_value=1):
     for key in keys:
         values = [item[key] for item in batch]
         
-        if key in ['prompt', 'task_name', 'episode_name']:
+        if key in ['prompt', 'task_name', 'episode_name', 'task_label', 'embodiment_label']:
             # String data - keep as list
             result[key] = values
         elif key in ['video', 'vace_video', 'vace_video_mask']:
