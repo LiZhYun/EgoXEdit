@@ -591,6 +591,17 @@ def video_collate_fn(batch, min_value=-1, max_value=1):
                                 t = torch.cat([t, pad_obj], dim=1)
                             padded_tensors.append(t)
                         result[key] = torch.stack(padded_tensors)
+                        
+                        # Apply standard normalization to reduce noise
+                        data = result[key]
+                        mask = (data != 0).any(dim=-1)  # [batch, seq_len, num_objects]
+                        if mask.any():
+                            valid_data = data[mask]  # [valid_points, 9]
+                            mean = valid_data.mean(dim=0)  # [9]
+                            std = valid_data.std(dim=0, unbiased=False)  # [9]
+                            std = torch.where(std > 1e-6, std, torch.ones_like(std))
+                            data = (data - mean.view(1, 1, 1, -1)) / std.view(1, 1, 1, -1)
+                            result[key] = data
                     elif key == 'object_ids':
                         # [num_objects] -> pad to same number of objects
                         max_objects = max(t.shape[0] for t in valid_tensors)
@@ -611,6 +622,18 @@ def video_collate_fn(batch, min_value=-1, max_value=1):
                                 t = torch.cat([t, pad], dim=0)
                             padded_tensors.append(t)
                         result[key] = torch.stack(padded_tensors)
+                        
+                        # Apply standard normalization to reduce noise
+                        data = result[key]
+                        mask = (data != 0).any(dim=-1)  # Identify non-padded regions
+                        if mask.any():
+                            valid_data = data[mask]
+                            mean = valid_data.mean(dim=0)
+                            std = valid_data.std(dim=0, unbiased=False)
+                            std = torch.where(std > 1e-6, std, torch.ones_like(std))
+                            data = (data - mean.unsqueeze(0).unsqueeze(0)) / std.unsqueeze(0).unsqueeze(0)
+                            result[key] = data
+
         else:
             # Default: keep as list
             result[key] = values
