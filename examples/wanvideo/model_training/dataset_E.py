@@ -296,7 +296,7 @@ class VideoDatasetE(torch.utils.data.Dataset):
         def validate_with_imageio(video_path):
             try:
                 import imageio
-                reader = imageio.get_reader(video_path)
+                reader = imageio.get_reader(video_path, format="ffmpeg")
                 
                 # Try to get metadata
                 meta = reader.get_meta_data()
@@ -562,7 +562,7 @@ class VideoDatasetE(torch.utils.data.Dataset):
     def load_video(self, file_path):
         """Load video frames as list of PIL images."""
         try:
-            reader = imageio.get_reader(file_path)
+            reader = imageio.get_reader(file_path, format="ffmpeg")
             num_frames = self.get_num_frames(reader)
             frames = []
             for frame_id in range(num_frames):
