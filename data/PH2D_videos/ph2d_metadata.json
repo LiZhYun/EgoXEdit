@@ -1,0 +1,341 @@
+{
+    "metadata": {
+        "task_types": [
+            "pouring",
+            "grasping",
+            "stacking",
+            "picking",
+            "cup_passing",
+            "sorting_cans"
+        ],
+        "embodiment_type_camera": {
+            "h1_inspire": "UCSD_H1_ZED",
+            "h1_2_inspire_cmu": "CMU_H1_ZED",
+            "h1_inspire_sim": "h1_inspire_sim_camera",
+            "human_avp": "UCSD_Vision_pro_1",
+            "human_zed": "UCSD_HUMAN_ZED",
+            "gr1_inspire_sim": "gr1_inspire_sim_camera",
+            "h1_2_inspire_sim": "h1_2_inspire_sim_camera"
+        },
+        "cameras": {
+            "UCSD_H1_ZED": {
+                "intrinsics": {
+                    "cx": 622.2891845703125,
+                    "cy": 354.453369140625,
+                    "fx": 730.7215576171875,
+                    "fy": 730.7215576171875
+                },
+                "resolution": {
+                    "raw_width": 1280,
+                    "raw_height": 720
+                }
+            },
+            "UCSD_Vision_pro_1": {
+                "intrinsics": {
+                    "cx": 960,
+                    "cy": 540,
+                    "fx": 748.9841404939381,
+                    "fy": 768.5409577772721
+                },
+                "resolution": {
+                    "raw_width": 1920,
+                    "raw_height": 1090
+                }
+            },
+            "CMU_H1_ZED": {},
+            "UCSD_HUMAN_ZED": {},
+            "h1_inspire_sim_camera": {},
+            "h1_2_inspire_sim_camera": {},
+            "gr1_inspire_sim_camera": {}
+        }
+    },
+    "per_task_attributes": {
+        "501-pouring-2024_11_12-23_39_22": {
+            "task_type": "pouring",
+            "embodiment_type": "h1_inspire",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "401-picking-2024_11_12-22_39_57": {
+            "task_type": "picking",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small round square cube."
+        },
+        "1061new_sim_pepsi_grasp_h1_2_inspire-2025_02_11-22_20_48": {
+            "task_type": "grasping",
+            "embodiment_type": "h1_inspire_sim",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "black bottle with blue lid."
+        },
+        "113-picking-blackcube-human_2024-11-13_22-09-05": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small black block."
+        },
+        "502-pouring_random-2025_01_10-20_21_26": {
+            "task_type": "pouring",
+            "embodiment_type": "h1_inspire",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "105_lars-grasping_2024-11-08_15-47-04": {
+            "task_type": "grasping",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "white bottle with black lid."
+        },
+        "104-lars-grasping_2024-11-08_15-23-40": {
+            "task_type": "grasping",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "white bottle with black lid."
+        },
+        "1503-pouring_tea_2025-03-12_17-18-12": {
+            "task_type": "pouring",
+            "embodiment_type": "human_avp",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "1502-pouring_kura_2025-03-12_15-38-26": {
+            "task_type": "pouring",
+            "embodiment_type": "human_avp",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "404-pick_on_color_pad_right_far-2025_01_12-20_20_57": {
+            "task_type": "picking",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small square cube."
+        },
+        "403-pick_on_color_pad_left-2025_01_09-16_58_04": {
+            "task_type": "picking",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small square cube."
+        },
+        "1406-picking_orange_2025-03-12_17-08-20": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "orange."
+        },
+        "1403-human_pick_color_pad_left_2025-01-13_13-05-06": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small square cube."
+        },
+        "121-pouring-party-cup-human_2024-11-14_01-26-24": {
+            "task_type": "pouring",
+            "embodiment_type": "human_avp",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "1504-pouring_water_2025-03-12_19-33-52": {
+            "task_type": "pouring",
+            "embodiment_type": "human_avp",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "1400_grasping_three_items_zed-2025_01_23-20_13_12": {
+            "task_type": "grasping",
+            "embodiment_type": "human_zed",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "white product with black top."
+        },
+        "304-grasp_coke_random-2024_12_12-19_58_36": {
+            "task_type": "grasping",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "black bottle with blue lid."
+        },
+        "302-grasp_coke_random-2024_12_09-21_39_30": {
+            "task_type": "grasping",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "black bottle with blue lid."
+        },
+        "120-pouring-mtn-human_2024-11-14_01-05-21": {
+            "task_type": "pouring",
+            "embodiment_type": "human_avp",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "903-picking-val-2024_11_18-18_58_16": {
+            "task_type": "picking",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small round square cube."
+        },
+        "405-pick_on_color_pad_right_far_far-2025_01_13-19_29_04": {
+            "task_type": "picking",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small square cube."
+        },
+        "112-picking-brownbox-human_2024-11-13_20-42-14": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "a brown cube."
+        },
+        "1501-pouring_costco_water_2025-03-12_17-23-11": {
+            "task_type": "pouring",
+            "embodiment_type": "human_avp",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "1407-picking_orange_tj_2025-03-12_16-42-19": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "orange."
+        },
+        "503-pouring-2025_01_27-22_03_40": {
+            "task_type": "pouring",
+            "embodiment_type": "h1_inspire",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "106-grasping-zedbox-human_2024-11-13_15-27-43": {
+            "task_type": "grasping",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "white product with black top."
+        },
+        "1405-picking_3cat_straw_2025-03-12_15-53-25": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "straw."
+        },
+        "108-grasping-water-human _2024-11-13_15-00-20": {
+            "task_type": "grasping",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "white bottle with green lid."
+        },
+        "902-pouring-val-2024_11_18-18_49_25": {
+            "task_type": "pouring",
+            "embodiment_type": "h1_inspire",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "111-picking-colorful-toycube_2024-11-13_20-25-34": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small LEGO brick."
+        },
+        "1404-human_more_colorpad_left_picking_2025-01-20_22-23-13": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small square cube."
+        },
+        "107-grasping-chocolate-human_2024-11-13_15-15-09": {
+            "task_type": "grasping",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "black bottle with white lid."
+        },
+        "2061_rw_pepsi_grasp_alan_2025_02_15-16_27_13": {
+            "task_type": "grasping",
+            "embodiment_type": "h1_2_inspire_cmu",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "bottle with blue lid."
+        },
+        "1500-pouring_2025-01-18_13-24-27": {
+            "task_type": "pouring",
+            "embodiment_type": "human_avp",
+            "left_hand": true,
+            "right_hand": true,
+            "objects": "cup, bottle."
+        },
+        "1402_grasping_three_items_whole_2025-01-23_19-37-55": {
+            "task_type": "grasping",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "Coke can."
+        },
+        "303-grasp_coke_random-2024_12_12-19_13_53": {
+            "task_type": "grasping",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "black bottle with blue lid."
+        },
+        "402-pick_on_color_pad_right-2025_01_09-16_36_15": {
+            "task_type": "picking",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small square cube."
+        },
+        "1401_grasping_three_items_2025-01-23_19-24-05": {
+            "task_type": "grasping",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "white product with black top."
+        },
+        "110-picking-dynamixel-human_2024-11-13_17-34-13": {
+            "task_type": "picking",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "small box with a black top."
+        },
+        "901-grasping-val-2024_11_18-17_36_04": {
+            "task_type": "grasping",
+            "embodiment_type": "h1_inspire",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "black bottle with blue lid."
+        },
+        "109-grasping-mtn-human_2024-11-13_14-40-07": {
+            "task_type": "grasping",
+            "embodiment_type": "human_avp",
+            "right_hand": true,
+            "left_hand": false,
+            "objects": "red bottle with green lid."
+        }
+    }
+}

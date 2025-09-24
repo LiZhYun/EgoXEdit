@@ -374,7 +374,7 @@ class ModelLogger:
         
         if self.use_wandb:
             wandb.init(
-                entity="zhiyuanli",
+                entity="",
                 project=wandb_project or "diffsynth-training",
                 config=wandb_config
             )

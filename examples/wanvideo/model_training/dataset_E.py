@@ -1033,7 +1033,7 @@ if __name__ == "__main__":
     parser.add_argument("--vace_e_task_processing", action="store_true", default=True, help="Enable VACE-E task feature processing")
     
     # Dataset-specific arguments
-    parser.add_argument("--task_metadata_path", type=str, default="/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json", help="Path to task metadata JSON")
+    parser.add_argument("--task_metadata_path", type=str, default="/home//Codes/human-policy/data/ph2d_metadata.json", help="Path to task metadata JSON")
     parser.add_argument("--max_hand_motion_length", type=int, default=512, help="Maximum hand motion sequence length")
     parser.add_argument("--max_object_trajectory_length", type=int, default=512, help="Maximum object trajectory sequence length")
     parser.add_argument("--max_objects", type=int, default=10, help="Maximum number of objects per episode")
@@ -1059,6 +1059,6 @@ if __name__ == "__main__":
     dataset = create_training_dataset(args)
     data = dataset[0]
     print(data)
-    obj_traj, obj_ids = dataset.load_object_trajectory_from_hdf5("/home/zhiyuan/Code/small_dataset/104-lars-grasping_2024-11-08_15-23-40/episode_23/episode_23_object_trajectories.hdf5")
+    obj_traj, obj_ids = dataset.load_object_trajectory_from_hdf5("/home/Code/small_dataset/104-lars-grasping_2024-11-08_15-23-40/episode_23/episode_23_object_trajectories.hdf5")
     print(obj_traj.shape)
     print(obj_ids)
