@@ -23,6 +23,7 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         vace_e_layers=(0, 5, 10, 15, 20, 25),
         vace_e_task_processing=True,
         resume_path=None,
+        resume_path_club=None,
     ):
         super().__init__()
         # Load models (following exact train.py pattern)
@@ -56,8 +57,13 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         )
 
         if resume_path:
+            print(f"🔄 Resuming training from {resume_path}")
             state_dict = load_state_dict(resume_path)
             self.pipe.vace_e.load_state_dict(state_dict)
+        if resume_path_club:
+            print(f"🔄 Resuming CLUB state from {resume_path_club}")
+            state_dict = load_state_dict(resume_path_club)
+            self.pipe.club_estimator.load_state_dict(state_dict)
         
         # Reset training scheduler
         self.pipe.scheduler.set_timesteps(1000, training=True)
@@ -207,13 +213,13 @@ class WanTrainingModuleE(DiffusionTrainingModule):
         return {**inputs_shared, **inputs_posi}
     
     
-    def forward(self, data, inputs=None):
+    def forward(self, data, inputs=None, epoch_id=0):
         if inputs is None: inputs = self.forward_preprocess(data)
         models = {name: getattr(self.pipe, name) for name in self.pipe.in_iteration_models}
         
         # Pass current training step to enable CLUB loss scheduling
-        loss, log_loss = self.pipe.training_loss(training_step=self.training_step, **models, **inputs)
-        
+        loss, log_loss = self.pipe.training_loss(training_step=self.training_step, epoch_id=epoch_id, **models, **inputs)
+
         # Increment training step counter
         self.training_step += 1
         
@@ -239,7 +245,7 @@ if __name__ == "__main__":
     parser.add_argument("--vace_e_task_processing", action="store_true", default=True, help="Enable VACE-E task feature processing")
     
     # Dataset-specific arguments
-    parser.add_argument("--task_metadata_path", type=str, default="/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json", help="Path to task metadata JSON")
+    parser.add_argument("--task_metadata_path", type=str, default="/scratch/work/liz23/h2rego_data_preprocess/data/ph2d_metadata.json", help="Path to task metadata JSON")
     parser.add_argument("--max_hand_motion_length", type=int, default=512, help="Maximum hand motion sequence length")
     parser.add_argument("--max_object_trajectory_length", type=int, default=512, help="Maximum object trajectory sequence length")
     parser.add_argument("--max_objects", type=int, default=10, help="Maximum number of objects per episode")
@@ -248,21 +254,22 @@ if __name__ == "__main__":
     # CLUB loss arguments
     parser.add_argument("--club_lambda", type=float, default=1.0, help="Weight for CLUB loss in total loss")
     parser.add_argument("--club_update_freq", type=int, default=1, help="Update CLUB estimator every N training steps")
-    parser.add_argument("--club_training_steps", type=int, default=5, help="Number of CLUB training steps per update")
+    parser.add_argument("--club_training_steps", type=int, default=20, help="Number of CLUB training steps per update")
     parser.add_argument("--club_lr", type=float, default=1e-3, help="Learning rate for CLUB optimizer")
     parser.add_argument("--enable_club_loss", action="store_true", default=True, help="Enable CLUB loss for mutual information minimization")
     parser.add_argument("--disable_club_loss", action="store_true", help="Disable CLUB loss (overrides enable_club_loss)")
 
     # CLIP contrastive loss arguments
     # Contrastive loss configuration
-    parser.add_argument("--contrastive_temperature", type=float, default=0.07, help="Temperature parameter for contrastive loss")
-    parser.add_argument("--task_contrastive_lambda", type=float, default=1.0, help="Weight for task contrastive loss")
-    parser.add_argument("--embodiment_contrastive_lambda", type=float, default=1.0, help="Weight for embodiment contrastive loss")
+    parser.add_argument("--contrastive_temperature", type=float, default=0.1, help="Temperature parameter for contrastive loss")
+    parser.add_argument("--task_contrastive_lambda", type=float, default=1, help="Weight for task contrastive loss")
+    parser.add_argument("--embodiment_contrastive_lambda", type=float, default=1, help="Weight for embodiment contrastive loss")
     parser.add_argument("--enable_contrastive_loss", action="store_true", default=True, help="Enable contrastive loss")
     parser.add_argument("--disable_contrastive_loss", action="store_true", help="Disable contrastive loss (overrides enable_contrastive_loss)")
 
     parser.add_argument("--resume_path", type=str, default=None, help="Resume training from checkpoint")
-    
+    parser.add_argument("--resume_path_club", type=str, default=None, help="Resume training from CLUB checkpoint")
+
     args = parser.parse_args()
     
     # Initialize Accelerator first so each process only sees its own GPU
@@ -311,6 +318,7 @@ if __name__ == "__main__":
         vace_e_layers=vace_e_layers,
         vace_e_task_processing=args.vace_e_task_processing,
         resume_path=args.resume_path,
+        resume_path_club=args.resume_path_club,
     )
     
     # Set device on model for balanced loading

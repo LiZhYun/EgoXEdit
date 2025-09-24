@@ -59,6 +59,7 @@ from PIL import Image
 import numpy as np
 import h5py
 import json
+import argparse
 from diffsynth import save_video, VideoData, load_state_dict
 from diffsynth.pipelines.wan_video_new_E import WanVideoPipeline, ModelConfig
 from modelscope import dataset_snapshot_download
@@ -68,7 +69,36 @@ import shutil
 import glob
 
 
-def load_task_metadata(metadata_path="/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json"):
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Enhanced Wan2.1-VACE-1.3B with VACE-E Support")
+    
+    # Model and weights
+    parser.add_argument("--state_dict_path", type=str, 
+                       default="/scratch/work/liz23/h2rego_video_generation/models/train/Wan2.1-VACE-E-1.3B_full_no_club/epoch-2.safetensors",
+                       help="Path to the state dict file to load")
+    
+    # Data paths
+    parser.add_argument("--dataset_path", type=str, 
+                       default="/scratch/work/liz23/DataSets/picking",
+                       help="Path to the dataset folder containing robot demonstration data")
+    
+    parser.add_argument("--end_effector_image", type=str,
+                       default="/scratch/work/liz23/DataSets/PH2D_videos/405-pick_on_color_pad_right_far_far-2025_01_13-19_29_04/episode_7/episode_7_hands_only.jpg",
+                       help="Path to the end-effector image to use")
+    
+    # Generation parameters
+    parser.add_argument("--vace_e_scale", type=float, default=1.0,
+                       help="VACE-E conditioning strength (default: 1.0)")
+    
+    # Output configuration
+    parser.add_argument("--output_dir", type=str, default="videos_no_club",
+                       help="Output directory name under ./output/ (default: videos_no_club)")
+    
+    return parser.parse_args()
+
+
+def load_task_metadata(metadata_path="/scratch/work/liz23/h2rego_data_preprocess/data/ph2d_metadata.json"):
     """
     Load task metadata from JSON file.
     
@@ -118,31 +148,21 @@ def generate_task_prompt(task_name, metadata):
     
     # Generate prompt based on hand usage
     if left_hand and right_hand:
-        # Both hands active
-        if task_type.lower() == "pouring":
-            # Special case for pouring - assume left hand has first object, right hand has second
-            object_list = [obj.strip() for obj in objects.split(',')]
-            if len(object_list) >= 2:
-                prompt = f"Pouring, left hand {object_list[0]}, right hand {object_list[1]}"
-            else:
-                prompt = f"Pouring with both hands, {objects}"
+        if task_type == "pouring":
+            prompt = f"Pouring, left hand cup, right hand bottle"
         else:
-            prompt = f"{task_type.capitalize()} with both hands, {objects}"
-    elif right_hand and not left_hand:
-        # Only right hand active
+            prompt = f"Both hands {task_type} {objects}"
+    elif right_hand:
         prompt = f"Right hand {task_type} {objects}"
-    elif left_hand and not right_hand:
-        # Only left hand active
+    elif left_hand:
         prompt = f"Left hand {task_type} {objects}"
     else:
-        # No hands specified or both false - fallback
         prompt = f"{task_type.capitalize()} {objects}"
     
-    print(f"Generated prompt: {prompt}")
     return prompt
 
 
-def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Codes/DataSets/small_test"):
+def load_robot_data_from_hdf5(dataset_path="/scratch/work/liz23/DataSets/PH2D_videos"):
     """
     Load robot demonstration data from HDF5 files for VACE-E processing.
     
@@ -191,6 +211,9 @@ def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Codes/DataSets/small_t
     all_episodes = []
     
     for task_folder in task_folders:
+        if not task_folder.startswith("1"):
+            print(f"Skipping task {task_folder} (does not start with '1')")
+            continue
         task_path = os.path.join(dataset_path, task_folder)
         print(f"\nProcessing task: {task_folder}")
         
@@ -426,246 +449,260 @@ def load_robot_data_from_hdf5(dataset_path="/home/zhiyuan/Codes/DataSets/small_t
                 print(f"      ✓ End-effector image: {os.path.basename(episode_data['end_effector_image_path'])}")
             
             all_episodes.append(episode_data)
-    
     print(f"\n✅ Loaded {len(all_episodes)} episodes from {len(task_folders)} tasks")
     return all_episodes
 
 
-# Load WanVideoPipeline with VACE-E support enabled
-pipe = WanVideoPipeline.from_pretrained(
-    torch_dtype=torch.bfloat16,
-    device="cuda",
-    model_configs=[
-        ModelConfig(model_id="Wan-AI/Wan2.1-VACE-1.3B", origin_file_pattern="diffusion_pytorch_model*.safetensors", offload_device="cpu"),
-        ModelConfig(model_id="Wan-AI/Wan2.1-VACE-1.3B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth", offload_device="cpu"),
-        ModelConfig(model_id="Wan-AI/Wan2.1-VACE-1.3B", origin_file_pattern="Wan2.1_VAE.pth", offload_device="cpu"),
-        ModelConfig(model_id="Wan-AI/Wan2.1-I2V-14B-480P", origin_file_pattern="models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth", offload_device="cpu")
-    ],
-    # VACE-E configuration
-    enable_vace_e=True,
-    vace_e_layers=(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28),
-    vace_e_task_processing=True,
-)
-
-state_dict = load_state_dict("/home/zhiyuan/Codes/DiffSynth-Studio/models/train/Wan2.1-VACE-E-1.3B_full/epoch-1.safetensors")
-pipe.vace_e.load_state_dict(state_dict)
-
-pipe.enable_vram_management()
-
-# Load robot demonstration data for VACE-E
-print("\n=== Loading Robot Demonstration Data for VACE-E ===")
-robot_episodes = load_robot_data_from_hdf5("/home/zhiyuan/Codes/DataSets/small_test")
-
-# Load task metadata for prompt generation
-print("\n=== Loading Task Metadata ===")
-task_metadata = load_task_metadata("/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json")
-
-if not robot_episodes:
-    print("⚠️ No robot episodes loaded, continuing with standard VACE generation...")
-    # Create a dummy episode for fallback
-    robot_episodes = [{
-        'task_name': 'fallback',
-        'episode_name': 'fallback',
-        'hand_motion_sequence': None,
-        'object_trajectory_sequence': None,
-        'object_ids': None,
-        'vace_video_path': None,
-        'vace_mask_path': None,
-        'end_effector_image_path': None
-    }]
-
-print(f"\n🎬 Processing {len(robot_episodes)} episodes...")
-
-# Process each episode
-for episode_idx, episode_data in enumerate(robot_episodes):
-    print(f"\n{'='*60}")
-    print(f"Processing Episode {episode_idx + 1}/{len(robot_episodes)}")
-    print(f"Task: {episode_data['task_name']}")
-    print(f"Episode: {episode_data['episode_name']}")
-    print(f"{'='*60}")
-
-    # Prepare VACE-E features for this episode
-    vace_e_text_features = None
-    vace_e_hand_motion_sequence = None
-    vace_e_object_trajectory_sequence = None
-    vace_e_object_ids = None
-    vace_e_embodiment_image_features = None
-    vace_e_text_mask = None
-    vace_e_motion_mask = None
-    vace_e_trajectory_mask = None
-
-    print("\n=== Preparing VACE-E Features ===")
+def main():
+    """Main function to run the enhanced video generation."""
+    args = parse_args()
     
-    # 1. Prepare text features (encode robot task description)
-    robot_task_prompt = generate_task_prompt(episode_data['task_name'], task_metadata)
-    print(f"Encoding robot task: {robot_task_prompt}")
-    vace_e_text_features = pipe.prompter.encode_prompt(robot_task_prompt, device=pipe.device)
-    vace_e_text_mask = torch.ones(1, vace_e_text_features.shape[1], device=pipe.device).bool()
-    print(f"✓ Text features shape: {vace_e_text_features.shape}")
-    
-    # 2. Prepare hand motion sequence
-    if episode_data['hand_motion_sequence'] is not None:
-        vace_e_hand_motion_sequence = episode_data['hand_motion_sequence'].unsqueeze(0).to(pipe.device)
-        vace_e_motion_mask = torch.ones(1, vace_e_hand_motion_sequence.shape[1], device=pipe.device).bool()
-        print(f"✓ Hand motion sequence shape: {vace_e_hand_motion_sequence.shape}")
-    
-    # 3. Prepare object trajectory sequence
-    if episode_data['object_trajectory_sequence'] is not None:
-        vace_e_object_trajectory_sequence = episode_data['object_trajectory_sequence'].unsqueeze(0).to(pipe.device)
-        # Fix: object_ids should be 2D [batch_size, num_objects] not 1D
-        vace_e_object_ids = episode_data['object_ids'].unsqueeze(0).to(pipe.device)  # Add batch dimension
-        vace_e_trajectory_mask = torch.ones(1, vace_e_object_trajectory_sequence.shape[1], vace_e_object_trajectory_sequence.shape[2], device=pipe.device).bool()
-        print(f"✓ Object trajectory shape: {vace_e_object_trajectory_sequence.shape}")
-        print(f"✓ Object IDs shape: {vace_e_object_ids.shape} (should be [batch_size, num_objects])")
-        print(f"✓ Object IDs: {vace_e_object_ids}")
-    
-    # 4. Prepare embodiment features (end-effector image)
-    if episode_data['end_effector_image_path']:
-        print(f"Processing end-effector image: {episode_data['end_effector_image_path']}")
-        try:
-            end_effector_image = Image.open(episode_data['end_effector_image_path']).resize((832, 480))
-            end_effector_image = pipe.preprocess_image(end_effector_image.resize((832, 480))).to(pipe.device)
-            # Encode with CLIP image encoder
-            vace_e_embodiment_image_features = pipe.image_encoder.encode_image([end_effector_image])
-            print(f"✓ Embodiment image features shape: {vace_e_embodiment_image_features.shape}")
-        except Exception as e:
-            print(f"⚠️ Failed to process end-effector image: {e}")
-    
-    print(f"\n✅ VACE-E features prepared for {episode_data['episode_name']}!")
-    print(f"   Text features: {vace_e_text_features.shape if vace_e_text_features is not None else 'None'}")
-    print(f"   Hand motion: {vace_e_hand_motion_sequence.shape if vace_e_hand_motion_sequence is not None else 'None'}")
-    print(f"   Object trajectory: {vace_e_object_trajectory_sequence.shape if vace_e_object_trajectory_sequence is not None else 'None'}")
-    print(f"   Embodiment image: {vace_e_embodiment_image_features.shape if vace_e_embodiment_image_features is not None else 'None'}")
-
-    # Prepare VACE video inputs for this episode
-    print("\n=== Preparing VACE Video Inputs ===")
-    
-    # Load episode-specific VACE videos
-    if episode_data['vace_video_path'] and episode_data['vace_mask_path']:
-        print(f"Loading VACE video: {episode_data['vace_video_path']}")
-        print(f"Loading VACE mask: {episode_data['vace_mask_path']}")
-        
-        vace_video = VideoData(episode_data['vace_video_path'], height=480, width=832)
-        vace_video_mask = VideoData(episode_data['vace_mask_path'], height=480, width=832)
-        
-        # Reduce frame count to 81 for VRAM efficiency
-        original_frames = len(vace_video)
-        target_frames = 81
-
-        if original_frames > target_frames:
-            print(f"Reducing video from {original_frames} frames to {target_frames} frames")
-            
-            # Sample frames evenly from the video
-            step = original_frames // target_frames
-            sampled_indices = [i * step for i in range(target_frames)]
-            
-            # Extract sampled frames from both video and mask
-            print("Extracting sampled frames...")
-            vace_frames = [vace_video[i] for i in sampled_indices]
-            mask_frames = [vace_video_mask[i] for i in sampled_indices]
-            
-            # Create temporary folders for sampled frames
-            temp_dir = tempfile.mkdtemp()
-            vace_temp_folder = os.path.join(temp_dir, "vace_frames")
-            mask_temp_folder = os.path.join(temp_dir, "mask_frames")
-            os.makedirs(vace_temp_folder, exist_ok=True)
-            os.makedirs(mask_temp_folder, exist_ok=True)
-            
-            # Save sampled frames to temporary folders
-            for i, (vace_frame, mask_frame) in enumerate(zip(vace_frames, mask_frames)):
-                vace_frame.save(os.path.join(vace_temp_folder, f"{i:04d}.png"))
-                mask_frame.save(os.path.join(mask_temp_folder, f"{i:04d}.png"))
-            
-            # Create new VideoData objects from sampled frames
-            vace_video = VideoData(image_folder=vace_temp_folder, height=240, width=416)
-            vace_video_mask = VideoData(image_folder=mask_temp_folder, height=240, width=416)
-            
-            print(f"✓ Reduced to {len(vace_video)} frames")
-            
-            # Clean up function (will be called after generation)
-            def cleanup_temp_files():
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-                    print("✓ Cleaned up temporary files")
-        else:
-            print(f"Video already has {original_frames} frames (≤ {target_frames}), no reduction needed")
-            def cleanup_temp_files():
-                pass  # No cleanup needed
-    else:
-        print("⚠️ No VACE video files found for this episode, skipping video generation...")
-        continue
-
-    print("\n=== Starting Enhanced Video Generation ===")
-    
-    # Generate enhanced video with both VACE and VACE-E
-    video = pipe(
-        prompt=robot_task_prompt,  # Use the same task-specific prompt
-        negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
-        
-        # Standard VACE parameters
-        vace_video=vace_video,
-        vace_video_mask=vace_video_mask,
-        vace_reference_image=Image.open(episode_data['end_effector_image_path']).resize((416, 240)),
-        vace_scale=1.0,
-        
-        # VACE-E Enhanced parameters (task-embodiment fusion)
-        vace_e_text_features=vace_e_text_features,
-        vace_e_hand_motion_sequence=vace_e_hand_motion_sequence,
-        vace_e_object_trajectory_sequence=vace_e_object_trajectory_sequence,
-        vace_e_object_ids=vace_e_object_ids,
-        vace_e_text_mask=vace_e_text_mask,
-        vace_e_motion_mask=vace_e_motion_mask,
-        vace_e_trajectory_mask=vace_e_trajectory_mask,
-        vace_e_embodiment_image_features=vace_e_embodiment_image_features,
-        vace_e_scale=1.0,  # VACE-E conditioning strength
-        
-        # Generation parameters
-        seed=1, 
-        tiled=True,
-        height=240,
-        width=416,
-        num_frames=len(vace_video)  # Use the reduced frame count (81 or less)
+    # Load WanVideoPipeline with VACE-E support enabled
+    pipe = WanVideoPipeline.from_pretrained(
+        torch_dtype=torch.bfloat16,
+        device="cuda",
+        model_configs=[
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-1.3B", origin_file_pattern="diffusion_pytorch_model*.safetensors", offload_device="cpu"),
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-1.3B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth", offload_device="cpu"),
+            ModelConfig(model_id="Wan-AI/Wan2.1-VACE-1.3B", origin_file_pattern="Wan2.1_VAE.pth", offload_device="cpu"),
+            ModelConfig(model_id="Wan-AI/Wan2.1-I2V-14B-480P", origin_file_pattern="models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth", offload_device="cpu")
+        ],
+        # VACE-E configuration
+        enable_vace_e=True,
+        vace_e_layers=(0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28),
+        vace_e_task_processing=True,
     )
+
+    state_dict = load_state_dict(args.state_dict_path)
+    pipe.vace_e.load_state_dict(state_dict)
+
+    pipe.enable_vram_management()
+
+    # Load robot demonstration data for VACE-E
+    print("\n=== Loading Robot Demonstration Data for VACE-E ===")
+    robot_episodes = load_robot_data_from_hdf5(args.dataset_path)
+
+    # Load task metadata for prompt generation
+    print("\n=== Loading Task Metadata ===")
+    task_metadata = load_task_metadata("/scratch/work/liz23/h2rego_data_preprocess/data/ph2d_metadata.json")
+
+    if not robot_episodes:
+        print("⚠️ No robot episodes loaded, continuing with standard VACE generation...")
+        # Create a dummy episode for fallback
+        robot_episodes = [{
+            'task_name': 'fallback',
+            'episode_name': 'fallback',
+            'hand_motion_sequence': None,
+            'object_trajectory_sequence': None,
+            'object_ids': None,
+            'vace_video_path': None,
+            'vace_mask_path': None,
+            'end_effector_image_path': None
+        }]
+
+    print(f"\n🎬 Processing {len(robot_episodes)} episodes...")
+
+    # Process each episode
+    for episode_idx, episode_data in enumerate(robot_episodes):
+        if not episode_data['task_name'].startswith("1"):
+            continue
+        print(f"\n{'='*60}")
+        print(f"Processing Episode {episode_idx + 1}/{len(robot_episodes)}")
+        print(f"Task: {episode_data['task_name']}")
+        print(f"Episode: {episode_data['episode_name']}")
+        print(f"{'='*60}")
+
+        # Prepare VACE-E features for this episode
+        vace_e_text_features = None
+        vace_e_hand_motion_sequence = None
+        vace_e_object_trajectory_sequence = None
+        vace_e_object_ids = None
+        vace_e_embodiment_image_features = None
+        vace_e_text_mask = None
+        vace_e_motion_mask = None
+        vace_e_trajectory_mask = None
+
+        print("\n=== Preparing VACE-E Features ===")
+        
+        # 1. Prepare text features (encode robot task description)
+        robot_task_prompt = generate_task_prompt(episode_data['task_name'], task_metadata)
+        print(f"Encoding robot task: {robot_task_prompt}")
+        vace_e_text_features = pipe.prompter.encode_prompt(robot_task_prompt, device=pipe.device)
+        vace_e_text_mask = torch.ones(1, vace_e_text_features.shape[1], device=pipe.device).bool()
+        print(f"✓ Text features shape: {vace_e_text_features.shape}")
+        
+        # 2. Prepare hand motion sequence
+        if episode_data['hand_motion_sequence'] is not None:
+            vace_e_hand_motion_sequence = episode_data['hand_motion_sequence'].unsqueeze(0).to(pipe.device)
+            vace_e_motion_mask = torch.ones(1, vace_e_hand_motion_sequence.shape[1], device=pipe.device).bool()
+            print(f"✓ Hand motion sequence shape: {vace_e_hand_motion_sequence.shape}")
+        
+        # 3. Prepare object trajectory sequence
+        if episode_data['object_trajectory_sequence'] is not None:
+            vace_e_object_trajectory_sequence = episode_data['object_trajectory_sequence'].unsqueeze(0).to(pipe.device)
+            # Fix: object_ids should be 2D [batch_size, num_objects] not 1D
+            vace_e_object_ids = episode_data['object_ids'].unsqueeze(0).to(pipe.device)  # Add batch dimension
+            vace_e_trajectory_mask = torch.ones(1, vace_e_object_trajectory_sequence.shape[1], vace_e_object_trajectory_sequence.shape[2], device=pipe.device).bool()
+            print(f"✓ Object trajectory shape: {vace_e_object_trajectory_sequence.shape}")
+            print(f"✓ Object IDs shape: {vace_e_object_ids.shape} (should be [batch_size, num_objects])")
+            print(f"✓ Object IDs: {vace_e_object_ids}")
+
+        episode_data['end_effector_image_path'] = args.end_effector_image
+        # episode_data['end_effector_image_path'] = "/scratch/work/liz23/DataSets/PH2D_videos/303-grasp_coke_random-2024_12_12-19_13_53/episode_5/episode_5_hands_only.jpg"
+        # episode_data['end_effector_image_path'] = "/scratch/work/liz23/DataSets/PH2D_videos/502-pouring_random-2025_01_10-20_21_26/episode_0/episode_0_hands_only.jpg"
+        # 4. Prepare embodiment features (end-effector image)
+        if episode_data['end_effector_image_path']:
+            print(f"Processing end-effector image: {episode_data['end_effector_image_path']}")
+            try:
+                end_effector_image = Image.open(episode_data['end_effector_image_path']).resize((832, 480))
+                end_effector_image = pipe.preprocess_image(end_effector_image.resize((832, 480))).to(pipe.device)
+                # Encode with CLIP image encoder
+                vace_e_embodiment_image_features = pipe.image_encoder.encode_image([end_effector_image])
+                print(f"✓ Embodiment image features shape: {vace_e_embodiment_image_features.shape}")
+            except Exception as e:
+                print(f"⚠️ Failed to process end-effector image: {e}")
+        
+        print(f"\n✅ VACE-E features prepared for {episode_data['episode_name']}!")
+        print(f"   Text features: {vace_e_text_features.shape if vace_e_text_features is not None else 'None'}")
+        print(f"   Hand motion: {vace_e_hand_motion_sequence.shape if vace_e_hand_motion_sequence is not None else 'None'}")
+        print(f"   Object trajectory: {vace_e_object_trajectory_sequence.shape if vace_e_object_trajectory_sequence is not None else 'None'}")
+        print(f"   Embodiment image: {vace_e_embodiment_image_features.shape if vace_e_embodiment_image_features is not None else 'None'}")
+
+        # Prepare VACE video inputs for this episode
+        print("\n=== Preparing VACE Video Inputs ===")
+        
+        # Load episode-specific VACE videos
+        if episode_data['vace_video_path'] and episode_data['vace_mask_path']:
+            print(f"Loading VACE video: {episode_data['vace_video_path']}")
+            print(f"Loading VACE mask: {episode_data['vace_mask_path']}")
+            
+            vace_video = VideoData(episode_data['vace_video_path'], height=480, width=832)
+            vace_video_mask = VideoData(episode_data['vace_mask_path'], height=480, width=832)
+            
+            # Reduce frame count to 81 for VRAM efficiency
+            original_frames = len(vace_video)
+            target_frames = 81
+
+            if original_frames > target_frames:
+                print(f"Reducing video from {original_frames} frames to {target_frames} frames")
+                
+                # Sample frames evenly from the video
+                step = original_frames // target_frames
+                sampled_indices = [i * step for i in range(target_frames)]
+                
+                # Extract sampled frames from both video and mask
+                print("Extracting sampled frames...")
+                vace_frames = [vace_video[i] for i in sampled_indices]
+                mask_frames = [vace_video_mask[i] for i in sampled_indices]
+                
+                # Create temporary folders for sampled frames
+                temp_dir = tempfile.mkdtemp()
+                vace_temp_folder = os.path.join(temp_dir, "vace_frames")
+                mask_temp_folder = os.path.join(temp_dir, "mask_frames")
+                os.makedirs(vace_temp_folder, exist_ok=True)
+                os.makedirs(mask_temp_folder, exist_ok=True)
+                
+                # Save sampled frames to temporary folders
+                for i, (vace_frame, mask_frame) in enumerate(zip(vace_frames, mask_frames)):
+                    vace_frame.save(os.path.join(vace_temp_folder, f"{i:04d}.png"))
+                    mask_frame.save(os.path.join(mask_temp_folder, f"{i:04d}.png"))
+                
+                # Create new VideoData objects from sampled frames
+                vace_video = VideoData(image_folder=vace_temp_folder, height=480, width=832)
+                vace_video_mask = VideoData(image_folder=mask_temp_folder, height=480, width=832)
+                
+                print(f"✓ Reduced to {len(vace_video)} frames")
+                
+                # Clean up function (will be called after generation)
+                def cleanup_temp_files():
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir)
+                        print("✓ Cleaned up temporary files")
+            else:
+                print(f"Video already has {original_frames} frames (≤ {target_frames}), no reduction needed")
+                def cleanup_temp_files():
+                    pass  # No cleanup needed
+        else:
+            print("⚠️ No VACE video files found for this episode, skipping video generation...")
+            continue
+
+        print("\n=== Starting Enhanced Video Generation ===")
+        
+        # Generate enhanced video with both VACE and VACE-E
+        video = pipe(
+            prompt=robot_task_prompt,  # Use the same task-specific prompt
+            negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+            
+            # Standard VACE parameters
+            vace_video=vace_video,
+            vace_video_mask=vace_video_mask,
+            vace_reference_image=Image.open(episode_data['end_effector_image_path']).resize((832, 480)),
+            vace_scale=1.0,
+            
+            # VACE-E Enhanced parameters (task-embodiment fusion)
+            vace_e_text_features=vace_e_text_features,
+            vace_e_hand_motion_sequence=vace_e_hand_motion_sequence,
+            vace_e_object_trajectory_sequence=vace_e_object_trajectory_sequence,
+            vace_e_object_ids=vace_e_object_ids,
+            vace_e_text_mask=vace_e_text_mask,
+            vace_e_motion_mask=vace_e_motion_mask,
+            vace_e_trajectory_mask=vace_e_trajectory_mask,
+            vace_e_embodiment_image_features=vace_e_embodiment_image_features,
+            vace_e_scale=args.vace_e_scale,  # VACE-E conditioning strength
+            
+            # Generation parameters
+            seed=1, 
+            tiled=True,
+            height=480,
+            width=832,
+            num_frames=len(vace_video)  # Use the reduced frame count (81 or less)
+        )
+        
+        # Save episode-specific output
+        # output_filename = f"./output/videos/{episode_data['task_name']}_{episode_data['episode_name']}.mp4"
+        output_filename = f"./output/{args.output_dir}/{episode_data['task_name']}_{episode_data['episode_name']}.mp4"
+        save_video(video, output_filename, fps=15, quality=5)
+        print(f"✅ Saved enhanced video: {output_filename}")
+
+        # Clean up temporary files
+        cleanup_temp_files()
+
+        # Summary of generation for this episode
+        print(f"\n=== Episode {episode_data['episode_name']} Generation Summary ===")
+        print(f"📹 Output: {output_filename}")
+        print(f"🎬 Frames: {len(vace_video)} frames")
+        print(f"📝 Task prompt: {robot_task_prompt}")
+
+        print("\n🔧 VACE-E Features Used:")
+        features_used = []
+        if vace_e_text_features is not None:
+            features_used.append("✓ Text task description")
+        if vace_e_hand_motion_sequence is not None:
+            features_used.append(f"✓ Hand motion sequence ({vace_e_hand_motion_sequence.shape[1]} timesteps)")
+        if vace_e_object_trajectory_sequence is not None:
+            features_used.append(f"✓ Object trajectories ({vace_e_object_trajectory_sequence.shape[2]} objects)")
+        if vace_e_embodiment_image_features is not None:
+            features_used.append("✓ End-effector embodiment image")
+
+        if features_used:
+            for feature in features_used:
+                print(f"   {feature}")
+            print(f"\n🤖 Task-embodiment fusion successfully applied!")
+            print(f"   VACE scale: 1.0 (standard video editing)")
+            print(f"   VACE-E scale: {args.vace_e_scale} (task-embodiment guidance)")
+        else:
+            print("   ⚠️ No VACE-E features loaded - using standard VACE only")
+
+        print(f"\n🎯 Enhanced robot manipulation video generation complete for {episode_data['episode_name']}!")
+        # break
     
-    # Save episode-specific output
-    output_filename = f"{episode_data['task_name']}_{episode_data['episode_name']}_enhanced.mp4"
-    save_video(video, output_filename, fps=15, quality=5)
-    print(f"✅ Saved enhanced video: {output_filename}")
+    print(f"\n{'='*80}")
+    print(f"🎉 ALL EPISODES PROCESSED SUCCESSFULLY!")
+    print(f"Generated {len([ep for ep in robot_episodes if ep['vace_video_path']])} enhanced robot manipulation videos")
+    print(f"Each video combines traditional VACE editing with VACE-E task-embodiment fusion")
+    print(f"for more precise and contextually aware robot manipulation video synthesis.")
+    print(f"{'='*80}")
 
-    # Clean up temporary files
-    cleanup_temp_files()
 
-    # Summary of generation for this episode
-    print(f"\n=== Episode {episode_data['episode_name']} Generation Summary ===")
-    print(f"📹 Output: {output_filename}")
-    print(f"🎬 Frames: {len(vace_video)} frames")
-    print(f"📝 Task prompt: {robot_task_prompt}")
-
-    print("\n🔧 VACE-E Features Used:")
-    features_used = []
-    if vace_e_text_features is not None:
-        features_used.append("✓ Text task description")
-    if vace_e_hand_motion_sequence is not None:
-        features_used.append(f"✓ Hand motion sequence ({vace_e_hand_motion_sequence.shape[1]} timesteps)")
-    if vace_e_object_trajectory_sequence is not None:
-        features_used.append(f"✓ Object trajectories ({vace_e_object_trajectory_sequence.shape[2]} objects)")
-    if vace_e_embodiment_image_features is not None:
-        features_used.append("✓ End-effector embodiment image")
-
-    if features_used:
-        for feature in features_used:
-            print(f"   {feature}")
-        print(f"\n🤖 Task-embodiment fusion successfully applied!")
-        print(f"   VACE scale: 1.0 (standard video editing)")
-        print(f"   VACE-E scale: 1.0 (task-embodiment guidance)")
-    else:
-        print("   ⚠️ No VACE-E features loaded - using standard VACE only")
-
-    print(f"\n🎯 Enhanced robot manipulation video generation complete for {episode_data['episode_name']}!")
-
-print(f"\n{'='*80}")
-print(f"🎉 ALL EPISODES PROCESSED SUCCESSFULLY!")
-print(f"Generated {len([ep for ep in robot_episodes if ep['vace_video_path']])} enhanced robot manipulation videos")
-print(f"Each video combines traditional VACE editing with VACE-E task-embodiment fusion")
-print(f"for more precise and contextually aware robot manipulation video synthesis.")
-print(f"{'='*80}")
+if __name__ == "__main__":
+    main()

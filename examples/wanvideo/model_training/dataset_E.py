@@ -15,8 +15,8 @@ class VideoDatasetE(torch.utils.data.Dataset):
     Standalone dataset for VACE-E training with robot demonstration data.
     
     Designed specifically for the robotic data structure:
-    - Base path: /home/zhiyuan/Codes/DataSets/small_test/
-    - Task metadata: /home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json
+    - Base path: /scratch/work/liz23/DataSets/PH2D_videos/
+    - Task metadata: /scratch/work/liz23/h2rego_data_preprocess/data/ph2d_metadata.json
     - Episode structure: task_folder/episode_N/files
     
     Expected folder structure:
@@ -71,8 +71,8 @@ class VideoDatasetE(torch.utils.data.Dataset):
     
     def __init__(
         self,
-        base_path="/home/zhiyuan/Codes/DataSets/small_test",
-        task_metadata_path="/home/zhiyuan/Codes/human-policy/data/ph2d_metadata.json",
+        base_path="/scratch/work/liz23/DataSets/PH2D_videos",
+        task_metadata_path="/scratch/work/liz23/h2rego_data_preprocess/data/ph2d_metadata.json",
         num_frames=81,
         time_division_factor=4, 
         time_division_remainder=1,
@@ -991,6 +991,10 @@ class VideoDatasetE(torch.utils.data.Dataset):
         
         # Load end-effector image (optional)
         end_effector_path = self.find_end_effector_image(episode_path)
+        if task_name.startswith('1'):  # Only load for tasks starting with '1' (single-hand tasks)
+            end_effector_path = "/scratch/work/liz23/DataSets/human_hands.jpg"
+        else:
+            end_effector_path = "/scratch/work/liz23/DataSets/robot_hands.jpg"
         if end_effector_path:
             data['embodiment_image'] = self.load_image(end_effector_path)
             data['vace_reference_image'] = data['embodiment_image']  # Use as VACE reference

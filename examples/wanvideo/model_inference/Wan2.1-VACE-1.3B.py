@@ -59,8 +59,8 @@ control_video = VideoData("data/examples/wan/depth_video.mp4", height=480, width
 # the frame count should be divisible by 4 + 1, like 17, 21, 81
 # we can reduce the frame count to 81
 
-vace_video = VideoData("data/examples/wan/masked_video_robot.mp4", height=480, width=832)
-vace_video_mask = VideoData("data/examples/wan/mask_only_video_robot.mp4", height=480, width=832)
+vace_video = VideoData("/scratch/work/liz23/DataSets/PH2D_videos/121-pouring-party-cup-human_2024-11-14_01-26-24/episode_1/episode_1_hands_masked.mp4", height=480, width=832)
+vace_video_mask = VideoData("/scratch/work/liz23/DataSets/PH2D_videos/121-pouring-party-cup-human_2024-11-14_01-26-24/episode_1/episode_1_hands_mask.mp4", height=480, width=832)
 
 # Reduce frame count to 81 for VRAM efficiency
 original_frames = len(vace_video)
@@ -112,7 +112,7 @@ video = pipe(
     negative_prompt="色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
     vace_video=vace_video,
     vace_video_mask=vace_video_mask,  # Start without mask for simpler debugging
-    vace_reference_image=Image.open("data/examples/wan/masked_object.jpg").resize((832, 480)),
+    vace_reference_image=Image.open("/scratch/work/liz23/DataSets/PH2D_videos/302-grasp_coke_random-2024_12_09-21_39_30/episode_0/episode_0_hands_only.jpg").resize((832, 480)),
     seed=1, 
     tiled=True,
     height=480,

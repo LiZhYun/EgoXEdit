@@ -409,12 +409,28 @@ class ModelLogger:
             try:
                 # Try the standard approach first
                 state_dict = accelerator.get_state_dict(model)
-                state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
-                state_dict = self.state_dict_converter(state_dict)
+                
+                # Filter to only save vace_e module parameters (before prefix removal)
+                vace_e_state_dict = {}
+                club_estimator_state_dict = {}
+                for k, v in state_dict.items():
+                    if 'vace_e' in k:
+                        vace_e_state_dict[k] = v
+                    if 'club_estimator' in k:
+                        club_estimator_state_dict[k] = v
+
+                vace_e_state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(vace_e_state_dict, remove_prefix=self.remove_prefix_in_ckpt)
+                vace_e_state_dict = self.state_dict_converter(vace_e_state_dict)
+
+                club_estimator_state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(club_estimator_state_dict, remove_prefix="pipe.club_estimator.")
+                club_estimator_state_dict = self.state_dict_converter(club_estimator_state_dict)
+
                 os.makedirs(self.output_path, exist_ok=True)
-                path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
-                accelerator.save(state_dict, path, safe_serialization=True)
-                print(f"✅ Checkpoint saved: {path}")
+                vace_e_path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
+                club_estimator_path = os.path.join(self.output_path, f"epoch-{epoch_id}-club_estimator.safetensors")
+                accelerator.save(vace_e_state_dict, vace_e_path, safe_serialization=True)
+                accelerator.save(club_estimator_state_dict, club_estimator_path, safe_serialization=True)
+                print(f"✅ Checkpoint saved: {vace_e_path, club_estimator_path}")
             except Exception as e:
                 if "CUDA_HOME" in str(e):
                     print(f"⚠️ Standard checkpoint saving failed due to CUDA_HOME issue, using fallback method...")
@@ -422,15 +438,19 @@ class ModelLogger:
                     try:
                         raw_model = accelerator.unwrap_model(model)
                         state_dict = raw_model.state_dict()
-                        state_dict = raw_model.export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
-                        state_dict = self.state_dict_converter(state_dict)
+                        
+                        # Filter to only save vace_e module parameters (before prefix removal)
+                        vace_e_state_dict = {k: v for k, v in state_dict.items() if 'vace_e' in k}
+                        vace_e_state_dict = raw_model.export_trainable_state_dict(vace_e_state_dict, remove_prefix=self.remove_prefix_in_ckpt)
+                        state_dict = self.state_dict_converter(vace_e_state_dict)
+                        
                         os.makedirs(self.output_path, exist_ok=True)
                         path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
                         
                         # Use torch.save instead of accelerator.save
                         from safetensors.torch import save_file
                         save_file(state_dict, path)
-                        print(f"✅ Checkpoint saved (fallback): {path}")
+                        print(f"✅ Checkpoint saved (vace_e only, fallback): {path}")
                     except Exception as e2:
                         print(f"❌ Both checkpoint saving methods failed: {e2}")
                         return
@@ -445,14 +465,14 @@ class ModelLogger:
                     "train/checkpoint_saved": True
                 }, step=self.step_count)
                 
-                # Optionally save model as wandb artifact
-                artifact = wandb.Artifact(
-                    name=f"model-epoch-{epoch_id}",
-                    type="model",
-                    description=f"Model checkpoint at epoch {epoch_id}"
-                )
-                artifact.add_file(path)
-                wandb.log_artifact(artifact)
+                # # Optionally save model as wandb artifact
+                # artifact = wandb.Artifact(
+                #     name=f"model-epoch-{epoch_id}",
+                #     type="model",
+                #     description=f"Model checkpoint at epoch {epoch_id}"
+                # )
+                # artifact.add_file(path)
+                # wandb.log_artifact(artifact)
     
     
     def finish(self):
@@ -592,16 +612,16 @@ def video_collate_fn(batch, min_value=-1, max_value=1):
                             padded_tensors.append(t)
                         result[key] = torch.stack(padded_tensors)
                         
-                        # Apply standard normalization to reduce noise
-                        data = result[key]
-                        mask = (data != 0).any(dim=-1)  # [batch, seq_len, num_objects]
-                        if mask.any():
-                            valid_data = data[mask]  # [valid_points, 9]
-                            mean = valid_data.mean(dim=0)  # [9]
-                            std = valid_data.std(dim=0, unbiased=False)  # [9]
-                            std = torch.where(std > 1e-6, std, torch.ones_like(std))
-                            data = (data - mean.view(1, 1, 1, -1)) / std.view(1, 1, 1, -1)
-                            result[key] = data
+                        # # Apply standard normalization to reduce noise
+                        # data = result[key]
+                        # mask = (data != 0).any(dim=-1)  # [batch, seq_len, num_objects]
+                        # if mask.any():
+                        #     valid_data = data[mask]  # [valid_points, 9]
+                        #     mean = valid_data.mean(dim=0)  # [9]
+                        #     std = valid_data.std(dim=0, unbiased=False)  # [9]
+                        #     std = torch.where(std > 1e-6, std, torch.ones_like(std))
+                        #     data = (data - mean.view(1, 1, 1, -1)) / std.view(1, 1, 1, -1)
+                        #     result[key] = data
                     elif key == 'object_ids':
                         # [num_objects] -> pad to same number of objects
                         max_objects = max(t.shape[0] for t in valid_tensors)
@@ -623,16 +643,16 @@ def video_collate_fn(batch, min_value=-1, max_value=1):
                             padded_tensors.append(t)
                         result[key] = torch.stack(padded_tensors)
                         
-                        # Apply standard normalization to reduce noise
-                        data = result[key]
-                        mask = (data != 0).any(dim=-1)  # Identify non-padded regions
-                        if mask.any():
-                            valid_data = data[mask]
-                            mean = valid_data.mean(dim=0)
-                            std = valid_data.std(dim=0, unbiased=False)
-                            std = torch.where(std > 1e-6, std, torch.ones_like(std))
-                            data = (data - mean.unsqueeze(0).unsqueeze(0)) / std.unsqueeze(0).unsqueeze(0)
-                            result[key] = data
+                        # # Apply standard normalization to reduce noise
+                        # data = result[key]
+                        # mask = (data != 0).any(dim=-1)  # Identify non-padded regions
+                        # if mask.any():
+                        #     valid_data = data[mask]
+                        #     mean = valid_data.mean(dim=0)
+                        #     std = valid_data.std(dim=0, unbiased=False)
+                        #     std = torch.where(std > 1e-6, std, torch.ones_like(std))
+                        #     data = (data - mean.unsqueeze(0).unsqueeze(0)) / std.unsqueeze(0).unsqueeze(0)
+                        #     result[key] = data
 
         else:
             # Default: keep as list
@@ -685,7 +705,7 @@ def launch_training_task(
         model.set_accelerator(accelerator)
     
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
-    model_logger.on_epoch_end(accelerator, model, 0)
+    # model_logger.on_epoch_end(accelerator, model, 0)
     
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
@@ -693,7 +713,7 @@ def launch_training_task(
                 continue
             with accelerator.accumulate(model):
                 optimizer.zero_grad()
-                loss, log_loss = model(data)
+                loss, log_loss = model(data, epoch_id=epoch_id)
                 accelerator.backward(loss)
                 optimizer.step()
                 model_logger.on_step_end(log_loss)
@@ -723,7 +743,7 @@ def enable_club_training_defaults(args):
         if args.batch_size <= 1:
             print("⚠️  Warning: CLUB loss requires batch_size > 1 for proper mutual information estimation.")
             print("   Automatically setting batch_size=4 and use_video_collate=True")
-            args.batch_size = 2
+            args.batch_size = 1
             args.use_video_collate = True
         
         if not args.use_video_collate:

@@ -44,6 +44,7 @@ from PIL import Image
 from tqdm import tqdm
 from typing import Optional
 from typing_extensions import Literal
+import math
 
 # Import DiffSynth components
 from ..models import ModelManager, load_state_dict
@@ -73,13 +74,18 @@ class CLUB(torch.nn.Module):
     def __init__(self, x_dim, y_dim, hidden_size):
         super(CLUB, self).__init__()
         # p_mu outputs mean of q(Y|X)
-        self.p_mu = torch.nn.Sequential(torch.nn.Linear(x_dim, hidden_size//2),
-                                       torch.nn.ReLU(),
-                                       torch.nn.Linear(hidden_size//2, y_dim))
+        self.p_mu = torch.nn.Sequential(torch.nn.Linear(x_dim, hidden_size),
+                                       torch.nn.GELU(),
+                                       torch.nn.Linear(hidden_size, hidden_size),
+                                       torch.nn.GELU(),
+                                       torch.nn.Linear(hidden_size, y_dim),
+                                       )
         # p_logvar outputs log of variance of q(Y|X)
-        self.p_logvar = torch.nn.Sequential(torch.nn.Linear(x_dim, hidden_size//2),
-                                       torch.nn.ReLU(),
-                                       torch.nn.Linear(hidden_size//2, y_dim),
+        self.p_logvar = torch.nn.Sequential(torch.nn.Linear(x_dim, hidden_size),
+                                       torch.nn.GELU(),
+                                       torch.nn.Linear(hidden_size, hidden_size),
+                                       torch.nn.GELU(),
+                                       torch.nn.Linear(hidden_size, y_dim),
                                        torch.nn.Tanh())
 
     def get_mu_logvar(self, x_samples):
@@ -103,6 +109,7 @@ class CLUB(torch.nn.Module):
 
     def loglikeli(self, x_samples, y_samples): # unnormalized loglikelihood 
         mu, logvar = self.get_mu_logvar(x_samples)
+        # print(f"   mu, logvar: {mu, logvar}")
         return (-(mu - y_samples)**2 /logvar.exp()-logvar).sum(dim=1).mean(dim=0)
     
     def learning_loss(self, x_samples, y_samples):
@@ -588,8 +595,8 @@ class WanVideoPipeline(BasePipeline):
         lora = load_state_dict(path, torch_dtype=self.torch_dtype, device=self.device)
         loader.load(module, lora, alpha=alpha)
 
-        
-    def training_loss(self, training_step=0, **inputs):
+
+    def training_loss(self, training_step=0, epoch_id=0, **inputs):
         """
         Compute training loss with VACE-E features and CLUB loss.
         
@@ -646,12 +653,12 @@ class WanVideoPipeline(BasePipeline):
         flow_loss = flow_loss * self.scheduler.training_weight(timestep)
         
         # Initialize CLUB loss with gradients enabled
-        club_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
+        club_loss = 0.0
         club_training_loss = 0.0
 
         # Initialize contrastive losses
-        task_contrastive_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
-        embodiment_contrastive_loss = torch.tensor(0.0, device=self.device, dtype=self.torch_dtype, requires_grad=True)
+        task_contrastive_loss = 0.0
+        embodiment_contrastive_loss = 0.0
         
         # Compute CLUB loss if VACE-E features are available and CLUB loss is enabled
         # Ensure all ranks take the same code path
@@ -695,6 +702,8 @@ class WanVideoPipeline(BasePipeline):
                 # Gather features from all GPUs for contrastive loss computation
                 # This ensures each GPU has the full global batch
                 # Use accelerator.gather for feature collection
+                # gathered_task_features = task_reduced
+                # gathered_embodiment_features = embodiment_reduced
                 gathered_task_features = self.accelerator.gather(task_reduced)
                 gathered_embodiment_features = self.accelerator.gather(embodiment_reduced)
                 
@@ -721,6 +730,8 @@ class WanVideoPipeline(BasePipeline):
                                 embodiment_labels = torch.tensor(embodiment_labels, device=self.device, dtype=torch.long)
                             
                             # Gather features and labels from all GPUs for contrastive loss computation
+                            # gathered_task_labels = task_labels
+                            # gathered_embodiment_labels = embodiment_labels
                             gathered_task_labels = self.accelerator.gather(task_labels)
                             gathered_embodiment_labels = self.accelerator.gather(embodiment_labels)
                             
@@ -760,9 +771,11 @@ class WanVideoPipeline(BasePipeline):
                     print(f"🎯 Initialized CLUB estimator with dtype {self.torch_dtype} successfully!")
                 
                 # Phase 1: Train CLUB estimator to approximate q_θ(embodiment|task)
-                if training_step % self.club_update_freq == 0:
-                    club_training_loss = self.train_club_estimator(task_flat, embodiment_flat)
+                # if training_step % self.club_update_freq == 0:
+                #     club_training_loss = self.train_club_estimator(task_flat, embodiment_flat)
                     # Note: CLUB training loss is for monitoring only, not included in main loss
+                self.club_estimator.train()
+                club_training_loss = self.club_estimator.learning_loss(task_flat.detach(), embodiment_flat.detach())
                 
                 # Phase 2: Compute MI upper bound using trained CLUB estimator
                 # DO NOT use torch.no_grad() here as we need gradients for training!
@@ -771,11 +784,7 @@ class WanVideoPipeline(BasePipeline):
                 self.club_estimator.train()
                 
                 # Add MI upper bound to loss (we want to minimize this)
-                # Convert club_loss to a tensor that can accumulate gradients
-                if club_loss.requires_grad:
-                    club_loss = club_loss + self.club_lambda * mi_upper_bound
-                else:
-                    club_loss = self.club_lambda * mi_upper_bound
+                club_loss = self.club_lambda * mi_upper_bound
                 
                 # Debug: Check CLUB loss computation
                 print(f"🎯 CLUB Loss Debug:")
@@ -796,21 +805,30 @@ class WanVideoPipeline(BasePipeline):
             del globals()['_current_task_features']
         if '_current_embodiment_features' in globals():
             del globals()['_current_embodiment_features']
-        
-        # Combine all losses (removed old CLIP loss)
-        if (training_step + 1) % 10 == 0:
-            total_loss = flow_loss + club_loss + task_contrastive_loss + embodiment_contrastive_loss
+
+        if should_compute_club:
+            # flow_warmup_epochs = 2
+            # flow_weight = [0.0, 0.5, 1.0][min(epoch_id, flow_warmup_epochs)]
+            flow_weight = 1.0
+            
+            total_loss = flow_weight*flow_loss + 0.5*(club_training_loss + task_contrastive_loss + embodiment_contrastive_loss) + club_loss
+            # if training_step % 20 == 0:
+            #     total_loss += club_loss
+            
+            # Debug: Show final loss composition
+            print(f"🚀 Final Loss Debug:")
+            print(f"   Flow loss: {flow_loss.item():.6f}, requires_grad: {flow_loss.requires_grad}")
+            print(f"   Club loss: {club_loss.item():.6f}, requires_grad: {club_loss.requires_grad}")
+            print(f"   Task contrastive loss: {task_contrastive_loss.item():.6f}, requires_grad: {task_contrastive_loss.requires_grad}")
+            print(f"   Embodiment contrastive loss: {embodiment_contrastive_loss.item():.6f}, requires_grad: {embodiment_contrastive_loss.requires_grad}")
+            print(f"   Total loss: {total_loss.item():.6f}, requires_grad: {total_loss.requires_grad}")
+            print(f"   Total loss grad_fn: {total_loss.grad_fn}")
         else:
-            total_loss = flow_loss + task_contrastive_loss + embodiment_contrastive_loss
-        
-        # Debug: Show final loss composition
-        print(f"🚀 Final Loss Debug:")
-        print(f"   Flow loss: {flow_loss.item():.6f}, requires_grad: {flow_loss.requires_grad}")
-        print(f"   Club loss: {club_loss.item():.6f}, requires_grad: {club_loss.requires_grad}")
-        print(f"   Task contrastive loss: {task_contrastive_loss.item():.6f}, requires_grad: {task_contrastive_loss.requires_grad}")
-        print(f"   Embodiment contrastive loss: {embodiment_contrastive_loss.item():.6f}, requires_grad: {embodiment_contrastive_loss.requires_grad}")
-        print(f"   Total loss: {total_loss.item():.6f}, requires_grad: {total_loss.requires_grad}")
-        print(f"   Total loss grad_fn: {total_loss.grad_fn}")
+            total_loss = flow_loss
+            print(f"🚀 Final Loss Debug (no CLUB):")
+            print(f"   Flow loss: {flow_loss.item():.6f}, requires_grad: {flow_loss.requires_grad}")
+            print(f"   Total loss: {total_loss.item():.6f}, requires_grad: {total_loss.requires_grad}")
+            print(f"   Total loss grad_fn: {total_loss.grad_fn}")
 
         log_loss = {
                 'total_loss': total_loss,
@@ -860,8 +878,8 @@ class WanVideoPipeline(BasePipeline):
         the log-likelihood of the conditional distribution approximation.
         
         Args:
-            task_features: Task feature tensor [batch, task_dim]
-            embodiment_features: Embodiment feature tensor [batch, embodiment_dim]
+            task_features: Task feature tensor [batch, task_dim] (can be detached)
+            embodiment_features: Embodiment feature tensor [batch, embodiment_dim] (can be detached)
         
         Returns:
             Average training loss over all training steps
@@ -869,16 +887,22 @@ class WanVideoPipeline(BasePipeline):
         if self.club_estimator is None:
             return 0.0
         
+        # Ensure features are detached and don't require gradients for CLUB training
+        # The CLUB estimator only needs gradients for its own parameters
+        task_features = task_features.detach()
+        embodiment_features = embodiment_features.detach()
+        
         self.club_estimator.train()
         total_loss = 0.0
         
         for step in range(self.club_training_steps):
             # Train CLUB estimator to approximate q_θ(embodiment|task)
+            # learning_loss doesn't require input gradients, only CLUB parameter gradients
             club_loss = self.club_estimator.learning_loss(task_features, embodiment_features)
             
             # Update CLUB estimator parameters
             self.club_optimizer.zero_grad()
-            club_loss.backward(retain_graph=True)  # Retain graph for potential multiple uses
+            club_loss.backward()
             self.club_optimizer.step()
             
             total_loss += club_loss.item()
@@ -1318,7 +1342,7 @@ class WanVideoPipeline(BasePipeline):
                         pipe.dit,
                         vace_layers=vace_e_layers,
                         enable_task_processing=vace_e_task_processing,
-                        embodiment_dim=16,  # Reduced dimension for CLUB loss
+                        embodiment_dim=8,  # Reduced dimension for CLUB loss
                         task_dim=16  # Reduced task dimension
                     )
                     # Move to local device for distributed training
@@ -1333,7 +1357,7 @@ class WanVideoPipeline(BasePipeline):
                         pipe.dit,
                         vace_layers=vace_e_layers,
                         enable_task_processing=vace_e_task_processing,
-                        embodiment_dim=16,  # Reduced dimension for CLUB loss
+                        embodiment_dim=8,  # Reduced dimension for CLUB loss
                         task_dim=16  # Reduced task dimension
                     )
                     # Ensure VACE-E model is on the correct device
@@ -1348,20 +1372,20 @@ class WanVideoPipeline(BasePipeline):
                 # Initialize CLUB estimator for mutual information minimization
                 if vace_e_task_processing:
                     # Both task and embodiment features are projected to main model dimension
-                    feature_dim = 16
-                    hidden_size = feature_dim * 2  # Hidden layer size for CLUB networks
+                    feature_dim = 32
+                    hidden_size = 128  # Hidden layer size for CLUB networks
                     
                     club_device = local_device if is_distributed else device
                     pipe.club_estimator = CLUB(
-                        x_dim=feature_dim,  # Task features dimension
-                        y_dim=feature_dim,  # Embodiment features dimension  
+                        x_dim=16,  # Task features dimension
+                        y_dim=8,  # Embodiment features dimension  
                         hidden_size=hidden_size
                     ).to(device=club_device, dtype=torch_dtype)
                     
                     # Separate optimizer for CLUB estimator (typically higher learning rate)
                     pipe.club_optimizer = torch.optim.Adam(
                         pipe.club_estimator.parameters(), 
-                        lr=1e-4
+                        lr=1e-3
                     )
                     
                     print(f"✅ CLUB estimator initialized")

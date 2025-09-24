@@ -530,28 +530,38 @@ class SimpleTaskFusion(torch.nn.Module):
         else:
             raise ValueError("At least one of text_features, motion_features, or trajectory_features must be provided")
         
+        # Get the dtype and device from model parameters
+        model_dtype = next(self.parameters()).dtype
+        model_device = next(self.parameters()).device
+        
         # Text features (already from CLS token encoder)
         if text_features is not None:
+            # Ensure dtype consistency
+            text_features = text_features.to(dtype=model_dtype, device=model_device)
             features_to_concat.append(text_features)  # [batch_size, task_dim]
         else:
             # Use zero padding when modality is missing
-            zero_text = torch.zeros(batch_size, self.task_dim, device=next(self.parameters()).device)
+            zero_text = torch.zeros(batch_size, self.task_dim, dtype=model_dtype, device=model_device)
             features_to_concat.append(zero_text)
         
         # Motion features (already from CLS token encoder)
         if motion_features is not None:
+            # Ensure dtype consistency
+            motion_features = motion_features.to(dtype=model_dtype, device=model_device)
             features_to_concat.append(motion_features)  # [batch_size, task_dim]
         else:
             # Use zero padding when modality is missing
-            zero_motion = torch.zeros(batch_size, self.task_dim, device=next(self.parameters()).device)
+            zero_motion = torch.zeros(batch_size, self.task_dim, dtype=model_dtype, device=model_device)
             features_to_concat.append(zero_motion)
         
         # Trajectory features (already from CLS token encoder)
         if trajectory_features is not None:
+            # Ensure dtype consistency
+            trajectory_features = trajectory_features.to(dtype=model_dtype, device=model_device)
             features_to_concat.append(trajectory_features)  # [batch_size, task_dim]
         else:
             # Use zero padding when modality is missing
-            zero_trajectory = torch.zeros(batch_size, self.task_dim, device=next(self.parameters()).device)
+            zero_trajectory = torch.zeros(batch_size, self.task_dim, dtype=model_dtype, device=model_device)
             features_to_concat.append(zero_trajectory)
         
         # Concatenate all features
