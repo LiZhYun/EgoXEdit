@@ -58,7 +58,7 @@ data/PH2D_videos/
 
 ```bash
 # Clone the repository
-git clone git@github.com:LiZhYun/EgoXEdit.git
+git clone 
 cd EgoXEdit
 
 # Install dependencies
